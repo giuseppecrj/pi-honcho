@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.2...HEAD)
+## [v0.1.3](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.2...v0.1.3)
+
+### Commits
+
+- chore: automate changelog generation [`998612b`](https://github.com/giuseppecrj/pi-honcho/commit/998612b6dbcd3e7bf959ccf8c5b0bab8c19f5902)
+- fix: store managed skills under pi-honcho [`201f700`](https://github.com/giuseppecrj/pi-honcho/commit/201f700b77e315236232720ed6e4389e5f37d4d4)
 
 ## [v0.1.2](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.1...v0.1.2) - 2026-08-11
 
