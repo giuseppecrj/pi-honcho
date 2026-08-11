@@ -1,5 +1,7 @@
 # Pi Honcho
 
+![Pi Honcho: durable memory for Pi, with remote memory, exact local recall, Pi-native skills, and connected workspace status.](https://raw.githubusercontent.com/giuseppecrj/pi-honcho/main/docs/assets/pi-honcho-gallery.png)
+
 Durable, privacy-aware memory for [Pi](https://github.com/earendil-works/pi), powered by [Honcho](https://honcho.dev/).
 
 Pi Honcho carries useful context across conversations and repositories without putting remote work on the critical path of a Pi turn. It also includes exact local session search, Pi-native skill management, and standing instructions.
