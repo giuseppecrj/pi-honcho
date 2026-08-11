@@ -464,7 +464,9 @@ test("standing instructions inject offline and after a real connected Honcho sta
 					connected.pi.activeTools.includes("honcho_chat") &&
 					connected.pi.activeTools.includes("honcho_remember"),
 			);
-			assert.ok(statuses.some((status) => /Honcho:\s*connected/i.test(status)));
+			assert.ok(
+				statuses.some((status) => /^Honcho: connected · .+$/i.test(status)),
+			);
 
 			const handlers = connected.pi.handlers.get("before_agent_start") ?? [];
 			assert.equal(handlers.length, 2);

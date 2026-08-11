@@ -168,9 +168,20 @@ function describeStatus(status: HonchoMemoryStatus): string {
 	}
 }
 
-function showStatus(ctx: ExtensionContext, status: HonchoMemoryStatus): void {
+function showStatus(
+	ctx: ExtensionContext,
+	status: HonchoMemoryStatus,
+	workspaceId: string,
+): void {
 	if (ctx.hasUI) {
-		ctx.ui.setStatus(STATUS_KEY, `Honcho: ${describeStatus(status)}`);
+		const workspace =
+			status.kind === "disabled" || status.kind === "unconfigured"
+				? ""
+				: ` · ${workspaceId}`;
+		ctx.ui.setStatus(
+			STATUS_KEY,
+			`Honcho: ${describeStatus(status)}${workspace}`,
+		);
 	}
 }
 
@@ -414,7 +425,7 @@ export default function honchoMemory(
 			createClient,
 			(status) => {
 				if (!isCurrentStartup(generation)) return;
-				showStatus(ctx, status);
+				showStatus(ctx, status, startup.workspace.workspaceId);
 				refreshHonchoTools();
 			},
 		);
@@ -451,10 +462,14 @@ export default function honchoMemory(
 			forkSourceSessionFile,
 		).catch(() => {
 			if (!isCurrentStartup(generation)) return;
-			showStatus(ctx, {
-				kind: "retrying",
-				reason: "Unable to refresh memory",
-			});
+			showStatus(
+				ctx,
+				{
+					kind: "retrying",
+					reason: "Unable to refresh memory",
+				},
+				startup.workspace.workspaceId,
+			);
 		});
 		return statusController.current;
 	}
@@ -831,10 +846,16 @@ export default function honchoMemory(
 			return;
 		}
 		let inspection: WorkspaceInspection;
-		ctx.ui.setStatus(STATUS_KEY, "Honcho: inspecting workspace…");
+		ctx.ui.setStatus(
+			STATUS_KEY,
+			`Honcho: inspecting workspace… · ${statusDetails.workspaceId}`,
+		);
 		try {
 			inspection = await available.client.inspectWorkspace();
-			ctx.ui.setStatus(STATUS_KEY, "Honcho: connected");
+			ctx.ui.setStatus(
+				STATUS_KEY,
+				`Honcho: connected · ${inspection.workspaceId}`,
+			);
 		} catch {
 			ctx.ui.notify(
 				"Workspace inspection was incomplete; no remote data was deleted.",
