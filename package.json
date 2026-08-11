@@ -35,7 +35,8 @@
 		"extensions": [
 			"./src/index.ts",
 			"./src/local-tools.ts"
-		]
+		],
+		"image": "https://raw.githubusercontent.com/giuseppecrj/pi-honcho/v0.1.2/docs/assets/pi-honcho-gallery.png"
 	},
 	"scripts": {
 		"format": "biome format --write .",

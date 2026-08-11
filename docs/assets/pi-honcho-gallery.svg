@@ -1,0 +1,156 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title description">
+  <title id="title">Pi Honcho — durable memory for Pi</title>
+  <desc id="description">A dark terminal-inspired Pi Honcho package banner with a connected memory graph and workspace status.</desc>
+  <defs>
+    <linearGradient id="background" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07090f"/>
+      <stop offset="0.52" stop-color="#101221"/>
+      <stop offset="1" stop-color="#170d18"/>
+    </linearGradient>
+    <radialGradient id="violetGlow">
+      <stop offset="0" stop-color="#a68cff" stop-opacity="0.34"/>
+      <stop offset="1" stop-color="#a68cff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="coralGlow">
+      <stop offset="0" stop-color="#ff7468" stop-opacity="0.32"/>
+      <stop offset="1" stop-color="#ff7468" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="brand" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ff8b75"/>
+      <stop offset="0.5" stop-color="#ffd58a"/>
+      <stop offset="1" stop-color="#a991ff"/>
+    </linearGradient>
+    <linearGradient id="thread" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#66dcb8"/>
+      <stop offset="0.48" stop-color="#ffbd7a"/>
+      <stop offset="1" stop-color="#ae98ff"/>
+    </linearGradient>
+    <pattern id="grid" width="56" height="56" patternUnits="userSpaceOnUse">
+      <path d="M56 0H0V56" fill="none" stroke="#ffffff" stroke-opacity="0.035"/>
+    </pattern>
+    <filter id="glow" x="-100%" y="-100%" width="300%" height="300%">
+      <feGaussianBlur stdDeviation="9" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%">
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#000000" flood-opacity="0.38"/>
+    </filter>
+    <clipPath id="frame"><rect width="1600" height="900" rx="34"/></clipPath>
+  </defs>
+
+  <g clip-path="url(#frame)">
+    <rect width="1600" height="900" fill="url(#background)"/>
+    <rect width="1600" height="900" fill="url(#grid)"/>
+    <circle cx="1340" cy="182" r="490" fill="url(#violetGlow)"/>
+    <circle cx="1165" cy="710" r="450" fill="url(#coralGlow)"/>
+    <path d="M-80 765C260 655 423 803 700 724S1190 438 1708 616" fill="none" stroke="url(#thread)" stroke-opacity="0.1" stroke-width="110"/>
+
+    <!-- Package label -->
+    <g transform="translate(88 78)">
+      <rect width="220" height="44" rx="22" fill="#ffffff" fill-opacity="0.065" stroke="#ffffff" stroke-opacity="0.13"/>
+      <circle cx="25" cy="22" r="5" fill="#69dfb8" filter="url(#glow)"/>
+      <text x="43" y="28" fill="#d8ddd9" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" font-weight="700" letter-spacing="2">PI PACKAGE</text>
+    </g>
+    <text x="1512" y="105" text-anchor="end" fill="#8d94a6" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16" letter-spacing="2.6">POWERED BY HONCHO</text>
+
+    <!-- Headline -->
+    <text x="88" y="260" fill="#f5f4ef" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="114" font-weight="760" letter-spacing="-5">Pi</text>
+    <text x="214" y="260" fill="url(#brand)" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="114" font-weight="760" letter-spacing="-5">Honcho</text>
+    <text x="92" y="326" fill="#d3d4da" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="34" font-weight="470" letter-spacing="-0.5">Memory that follows the work.</text>
+    <text x="92" y="374" fill="#858b9d" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" font-size="21">Durable context across conversations, repositories, branches, and forks.</text>
+
+    <!-- Feature pills -->
+    <g transform="translate(90 424)" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14" font-weight="700" letter-spacing="1">
+      <g>
+        <rect width="188" height="42" rx="12" fill="#64d9b4" fill-opacity="0.09" stroke="#64d9b4" stroke-opacity="0.35"/>
+        <text x="94" y="27" text-anchor="middle" fill="#8ae6c7">REMOTE MEMORY</text>
+      </g>
+      <g transform="translate(202)">
+        <rect width="212" height="42" rx="12" fill="#ffbd78" fill-opacity="0.08" stroke="#ffbd78" stroke-opacity="0.32"/>
+        <text x="106" y="27" text-anchor="middle" fill="#ffd197">EXACT LOCAL RECALL</text>
+      </g>
+      <g transform="translate(428)">
+        <rect width="194" height="42" rx="12" fill="#a990ff" fill-opacity="0.09" stroke="#a990ff" stroke-opacity="0.34"/>
+        <text x="97" y="27" text-anchor="middle" fill="#c2b2ff">PI-NATIVE SKILLS</text>
+      </g>
+    </g>
+
+    <!-- Terminal card -->
+    <g transform="translate(88 520)" filter="url(#shadow)">
+      <rect width="720" height="234" rx="22" fill="#0b0e16" fill-opacity="0.93" stroke="#ffffff" stroke-opacity="0.13"/>
+      <path d="M0 54H720" stroke="#ffffff" stroke-opacity="0.09"/>
+      <circle cx="28" cy="27" r="6" fill="#ff7468"/>
+      <circle cx="50" cy="27" r="6" fill="#ffd16f"/>
+      <circle cx="72" cy="27" r="6" fill="#69dfb8"/>
+      <text x="360" y="33" text-anchor="middle" fill="#6f7788" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="14">pi — memory</text>
+      <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="18">
+        <text x="30" y="94" fill="#6dddb8">●</text>
+        <text x="58" y="94" fill="#aeb3bf">connection</text>
+        <text x="206" y="94" fill="#f5f4ef">connected</text>
+        <text x="30" y="132" fill="#ffbd78">◆</text>
+        <text x="58" y="132" fill="#aeb3bf">workspace</text>
+        <text x="206" y="132" fill="#f5f4ef">pi-honcho-memory</text>
+        <text x="30" y="170" fill="#ad99ff">↻</text>
+        <text x="58" y="170" fill="#aeb3bf">recall</text>
+        <text x="206" y="170" fill="#f5f4ef">ready for the next turn</text>
+      </g>
+      <rect x="28" y="194" width="664" height="1" fill="#ffffff" fill-opacity="0.07"/>
+      <text x="30" y="219" fill="#747b8b" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13">asynchronous · bounded · privacy-aware</text>
+    </g>
+
+    <!-- Memory constellation -->
+    <g transform="translate(850 175)">
+      <path d="M96 120C236 72 249 222 366 226S513 150 617 118" fill="none" stroke="url(#thread)" stroke-width="3" stroke-opacity="0.68"/>
+      <path d="M74 434C231 484 250 343 369 344S515 425 645 466" fill="none" stroke="url(#thread)" stroke-width="3" stroke-opacity="0.62"/>
+      <path d="M366 226C320 274 320 301 369 344" fill="none" stroke="#ffbd78" stroke-width="3" stroke-opacity="0.48" stroke-dasharray="7 10"/>
+      <path d="M617 118C550 233 562 350 645 466" fill="none" stroke="#a990ff" stroke-width="2" stroke-opacity="0.3" stroke-dasharray="4 13"/>
+
+      <g filter="url(#shadow)">
+        <rect x="0" y="72" width="204" height="98" rx="20" fill="#101723" stroke="#63d9b4" stroke-opacity="0.38"/>
+        <circle cx="29" cy="104" r="8" fill="#63d9b4" filter="url(#glow)"/>
+        <text x="49" y="110" fill="#e7e9e5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">YOU</text>
+        <text x="28" y="140" fill="#788092" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">preferences · style</text>
+      </g>
+      <g filter="url(#shadow)">
+        <rect x="0" y="388" width="214" height="98" rx="20" fill="#15131c" stroke="#ffbd78" stroke-opacity="0.35"/>
+        <circle cx="29" cy="420" r="8" fill="#ffbd78" filter="url(#glow)"/>
+        <text x="49" y="426" fill="#e7e9e5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">PROJECT</text>
+        <text x="28" y="456" fill="#837a7f" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">context · decisions</text>
+      </g>
+      <g filter="url(#shadow)">
+        <rect x="530" y="70" width="204" height="98" rx="20" fill="#151320" stroke="#aa94ff" stroke-opacity="0.42"/>
+        <circle cx="559" cy="102" r="8" fill="#aa94ff" filter="url(#glow)"/>
+        <text x="579" y="108" fill="#e7e9e5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">SESSION</text>
+        <text x="558" y="138" fill="#7d778d" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">summary · history</text>
+      </g>
+      <g filter="url(#shadow)">
+        <rect x="552" y="420" width="182" height="98" rx="20" fill="#11151e" stroke="#ff7b6e" stroke-opacity="0.4"/>
+        <circle cx="581" cy="452" r="8" fill="#ff7b6e" filter="url(#glow)"/>
+        <text x="601" y="458" fill="#e7e9e5" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="15" font-weight="700">FORK</text>
+        <text x="580" y="488" fill="#83777c" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12">continuity · isolation</text>
+      </g>
+
+      <!-- Core -->
+      <g transform="translate(367 286)" filter="url(#shadow)">
+        <circle r="106" fill="#0b0e16" stroke="url(#brand)" stroke-width="3"/>
+        <circle r="83" fill="none" stroke="#ffffff" stroke-opacity="0.09"/>
+        <circle r="64" fill="url(#violetGlow)"/>
+        <path d="M-39-35H27V9H5V31H-17V53H-39ZM-17-13V9H5V-13ZM27 9H49V53H27Z" fill="url(#brand)"/>
+        <circle cx="-70" cy="-70" r="5" fill="#63d9b4"/>
+        <circle cx="75" cy="-57" r="5" fill="#aa94ff"/>
+        <circle cx="68" cy="68" r="5" fill="#ff7b6e"/>
+        <circle cx="-73" cy="59" r="5" fill="#ffbd78"/>
+      </g>
+      <text x="367" y="428" text-anchor="middle" fill="#9ca3b2" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="13" letter-spacing="2">MEMORY, IN CONTEXT</text>
+    </g>
+
+    <!-- Footer status -->
+    <g transform="translate(88 814)">
+      <rect width="1424" height="1" fill="#ffffff" fill-opacity="0.1"/>
+      <circle cx="10" cy="41" r="6" fill="#65dcb6" filter="url(#glow)"/>
+      <text x="30" y="47" fill="#d7dad6" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="17">Honcho: connected · pi-honcho-memory</text>
+      <text x="1424" y="47" text-anchor="end" fill="#71788a" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="16">npm:pi-honcho</text>
+    </g>
+  </g>
+  <rect x="1" y="1" width="1598" height="898" rx="33" fill="none" stroke="#ffffff" stroke-opacity="0.12" stroke-width="2"/>
+</svg>
