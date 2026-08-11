@@ -1,6 +1,6 @@
 {
 	"name": "pi-honcho",
-	"version": "0.1.0",
+	"version": "0.1.1",
 	"description": "Durable, privacy-aware memory for Pi, powered by Honcho.",
 	"type": "module",
 	"author": "Giuseppe Rodriguez",
