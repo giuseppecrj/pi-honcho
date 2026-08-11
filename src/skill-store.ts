@@ -324,7 +324,7 @@ export class SkillStore {
 	constructor(options: SkillStoreOptions = {}) {
 		const root = agentRoot();
 		this.global = resolve(
-			options.globalSkillsDir ?? join(root, "pi-hermes-memory", "skills"),
+			options.globalSkillsDir ?? join(root, "pi-honcho", "skills"),
 		);
 		this.piGlobal = resolve(options.piGlobalSkillsDir ?? join(root, "skills"));
 		this.projectsRoot = resolve(

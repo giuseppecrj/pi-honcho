@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import {
+	access,
 	mkdir,
 	mkdtemp,
 	readFile,
@@ -108,6 +109,36 @@ function bodyFields(): Record<string, unknown> {
 		verification_steps: ["Confirm the result"],
 	};
 }
+
+test("default managed global skills live under pi-honcho", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-honcho-default-skills-"));
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	process.env.PI_CODING_AGENT_DIR = root;
+	try {
+		const cwd = join(root, "repo");
+		await mkdir(join(cwd, ".git"), { recursive: true });
+		const pi = new FakePi();
+		localKnowledgeTools(pi as unknown as ExtensionAPI, {
+			piGlobalSkillsDir: join(root, "pi-native-skills"),
+			projectsMemoryDir: join(root, "projects-memory"),
+			cwd,
+		});
+		const resources = pi.handlers.get("resources_discover") as
+			| ResourceHandler
+			| undefined;
+		assert.ok(resources);
+		assert.deepEqual((await resources({ cwd })).skillPaths, [
+			join(root, "pi-honcho", "skills"),
+			join(root, "projects-memory", "repo", "skills"),
+		]);
+		await access(join(root, "pi-honcho", "skills"));
+		await assert.rejects(access(join(root, "pi-hermes-memory", "skills")));
+	} finally {
+		if (previousAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+		else process.env.PI_CODING_AGENT_DIR = previousAgentDir;
+		await cleanup(root);
+	}
+});
 
 // Public registration seam: this must remain compatible with the established Hermes tool.
 test("skill_manage keeps the established tool metadata and action fields", async () => {
