@@ -82,63 +82,7 @@ Remote startup, recall, delivery, and retry do not block normal Pi operation. If
 
 ### Conversation lifecycle
 
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User
-    participant Pi
-    participant Ledger as Pi session ledger
-    participant Honcho
-
-    Pi->>Ledger: Read session mapping and delivery records
-    Pi->>Pi: Resolve the repository memory session
-
-    par Recover pending delivery
-        opt Recovered exchange without acknowledgement
-            Pi-->>Honcho: Reconcile the stable operation ID
-            alt Reconciliation succeeds
-                alt Already accepted
-                    Honcho-->>Pi: Return existing remote message IDs
-                    Pi->>Ledger: Append acknowledgement
-                else Not found remotely
-                    Honcho-->>Pi: Report no matching operation ID
-                    Pi-->>Honcho: Deliver the pending exchange
-                    alt Accepted
-                        Honcho-->>Pi: Return remote message IDs
-                        Pi->>Ledger: Append acknowledgement
-                    else Delivery unavailable or uncertain
-                        Note over Ledger: Keep pending for next recovery
-                    end
-                end
-            else Reconciliation unavailable or uncertain
-                Note over Ledger: Keep pending without redelivery
-            end
-        end
-    and Fetch cached recall
-        Pi-->>Honcho: Request cached context
-        Honcho-->>Pi: Session summary and Pi-specific user context
-        Note over Pi: Cache in process and inject when available
-    end
-
-    User->>Pi: Submit prompt
-    Note over Pi: Add bounded, fenced recall to this model call
-    Pi-->>User: Stream assistant response
-    Note over Pi: Tools, files, images, and thinking stay local
-    Pi->>Pi: Finalize and scan the exchange
-
-    alt Incomplete or contains a recognized secret
-        Note over Pi,Ledger: Do not append or deliver
-    else Eligible finalized exchange
-        Pi->>Ledger: Append pending exchange with stable ID
-        Pi-->>Honcho: Deliver asynchronously and in order
-        alt Accepted
-            Honcho-->>Pi: Return remote message IDs
-            Pi->>Ledger: Append acknowledgement
-        else Unavailable or uncertain
-            Note over Ledger: Keep pending for startup recovery
-        end
-    end
-```
+![Pi Honcho conversation lifecycle: resolve the repository session, recall once, apply cached memory every turn, and store completed exchanges asynchronously.](https://raw.githubusercontent.com/giuseppecrj/pi-honcho/main/docs/assets/conversation-memory-lifecycle.png)
 
 The ledger records are local Pi session entries. Recalled context stays in the running extension and is supplied only to a model call; it is not appended to the Pi session.
 
