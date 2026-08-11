@@ -45,8 +45,8 @@
 		"test": "tsx --test src/**/*.test.ts test/**/*.test.ts",
 		"typecheck": "tsc --noEmit",
 		"verify": "npm run typecheck && npm run lint && npm test",
-		"changelog": "auto-changelog",
-		"version": "auto-changelog --package && git add CHANGELOG.md"
+		"changelog": "auto-changelog --package",
+		"version": "npm run changelog && git add CHANGELOG.md"
 	},
 	"dependencies": {
 		"@honcho-ai/sdk": "2.2.0"
