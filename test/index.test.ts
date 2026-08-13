@@ -67,6 +67,26 @@ async function waitFor(check: () => boolean): Promise<void> {
 	throw new Error("Timed out waiting for lifecycle work");
 }
 
+test("does not register remote Honcho behavior in a Herdr subagent", () => {
+	const previous = process.env.PI_SUBAGENT_ID;
+	process.env.PI_SUBAGENT_ID = "child-1";
+	try {
+		const pi = new FakePiRuntime();
+		let factoryCalls = 0;
+		honchoMemory(pi as unknown as ExtensionAPI, () => {
+			factoryCalls += 1;
+			throw new Error("unexpected client creation");
+		});
+
+		assert.equal(factoryCalls, 0);
+		assert.equal(pi.handlers.size, 0);
+		assert.deepEqual(pi.activeTools, ["read"]);
+		assert.deepEqual(pi.entries, []);
+	} finally {
+		restoreEnvironment("PI_SUBAGENT_ID", previous);
+	}
+});
+
 test("fails open and keeps Honcho tools inactive when startup is disabled", async () => {
 	const previous = process.env.HONCHO_ENABLED;
 	process.env.HONCHO_ENABLED = "0";

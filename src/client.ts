@@ -165,14 +165,21 @@ export class SdkHonchoMemoryClient
 	}
 
 	async fetchCachedMemory(sessionId: string): Promise<CachedMemory> {
-		const { session } = await this.openSession(sessionId);
+		const { user, pi, session } = await this.openSession(sessionId);
 		const context: unknown = await session.context({
 			summary: true,
 			tokens: 800,
+			peerPerspective: pi,
+			peerTarget: user,
+			limitToSession: false,
 		});
 		if (!context || typeof context !== "object")
 			throw new Error("Honcho returned a malformed context");
-		const { summary } = context as { summary?: unknown };
+		const { summary, peerRepresentation, peerCard } = context as {
+			summary?: unknown;
+			peerRepresentation?: unknown;
+			peerCard?: unknown;
+		};
 		if (
 			summary != null &&
 			(typeof summary !== "object" ||
@@ -180,11 +187,22 @@ export class SdkHonchoMemoryClient
 				typeof summary.content !== "string")
 		)
 			throw new Error("Honcho returned a malformed context summary");
+		if (peerRepresentation != null && typeof peerRepresentation !== "string")
+			throw new Error("Honcho returned a malformed peer representation");
+		if (
+			peerCard != null &&
+			(!Array.isArray(peerCard) ||
+				peerCard.some((item) => typeof item !== "string"))
+		)
+			throw new Error("Honcho returned a malformed peer card");
 		return {
 			summary:
 				summary && typeof summary === "object" && "content" in summary
 					? (summary.content as string)
 					: undefined,
+			userRepresentation:
+				(peerRepresentation as string | null | undefined) ??
+				(peerCard as string[] | null | undefined)?.join("\n"),
 		};
 	}
 

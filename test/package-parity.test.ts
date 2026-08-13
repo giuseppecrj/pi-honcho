@@ -302,6 +302,28 @@ test("package loads both extension modules with unique tools and commands", asyn
 	}
 });
 
+test("Herdr subagents load only local knowledge behavior", async () => {
+	const previous = process.env.PI_SUBAGENT_ID;
+	process.env.PI_SUBAGENT_ID = "child-1";
+	const fixture = await loadBoth();
+	try {
+		assert.deepEqual([...fixture.pi.tools.keys()].sort(), [
+			"session_search",
+			"skill_manage",
+		]);
+		assert.deepEqual([...fixture.pi.commands.keys()], ["memory-pin"]);
+		assert.equal(
+			(fixture.pi.handlers.get("before_agent_start") ?? []).length,
+			1,
+		);
+		assert.equal(fixture.pi.handlers.has("session_start"), false);
+		assert.equal(fixture.pi.handlers.has("agent_settled"), false);
+	} finally {
+		await fixture.cleanup();
+		restoreEnvironment("PI_SUBAGENT_ID", previous);
+	}
+});
+
 test("both modules exercise session_search, skill_manage create, and resources_discover", async () => {
 	const previousEnabled = process.env.HONCHO_ENABLED;
 	process.env.HONCHO_ENABLED = "0";

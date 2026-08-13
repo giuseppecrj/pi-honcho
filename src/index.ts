@@ -307,6 +307,8 @@ export default function honchoMemory(
 	createLifecycleClient: StartupClientFactory = (configuration) =>
 		new SdkHonchoMemoryClient(configuration),
 ): void {
+	if (process.env.PI_SUBAGENT_ID?.trim()) return;
+
 	let controller: HonchoStatusController | undefined;
 	let cachedMemory: CachedMemory | undefined;
 	let deliveryQueue: ExchangeDeliveryQueue | undefined;
