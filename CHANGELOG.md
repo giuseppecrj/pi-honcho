@@ -5,7 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v0.1.3](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.2...v0.1.3)
+## [v0.1.4](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.3...v0.1.4)
+
+### Commits
+
+- docs: replace lifecycle chart with image [`261850b`](https://github.com/giuseppecrj/pi-honcho/commit/261850b4bb4daa8fdbf100242e44162014fdd912)
+- docs: add gallery cover to readme [`411ab79`](https://github.com/giuseppecrj/pi-honcho/commit/411ab793c27b8243cac0defd2a95ce81123b98e8)
+
+## [v0.1.3](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.2...v0.1.3) - 2026-08-11
 
 ### Commits
 
