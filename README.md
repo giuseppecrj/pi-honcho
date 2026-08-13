@@ -8,9 +8,8 @@ Pi Honcho carries useful context across conversations and repositories without p
 
 ## Features
 
-- **Cross-project user memory** — remembers preferences and working style through one stable user peer.
 - **Repository memory** — keeps project context in a repository-scoped memory session shared by branches and worktrees.
-- **Automatic recall** — adds bounded user and project context to later turns as fenced reference material.
+- **Automatic recall** — adds a bounded project summary to later turns as fenced reference material.
 - **Reliable delivery** — sends completed exchanges asynchronously, in order, with durable retry and stable operation IDs.
 - **Fork continuity** — clones remote history at Pi fork points while keeping later branches isolated.
 - **Exact local recall** — searches existing Pi session JSONL with SQLite FTS5.
@@ -73,12 +72,9 @@ Once connected, memory works automatically. Pi retrieves cached context when a s
 
 ## How memory works
 
-Pi Honcho uses two remote scopes:
+Pi Honcho stores conversation history and derived context in a repository-scoped memory session shared by branches and worktrees.
 
-- **User peer** — preferences and working style shared across projects.
-- **Memory session** — conversation history and derived context for one repository.
-
-At session start, the extension retrieves a cached user representation and project summary. It supplies that memory to the current model call as bounded, untrusted reference material. After a turn completes, it queues the submitted user prompt and completed text assistant response for ordered background delivery.
+At session start, the extension retrieves a cached project summary. It supplies that summary to the current model call as bounded, untrusted reference material. Inferred user representations are not injected automatically; use `/memory-pin` for explicit standing instructions. After a turn completes, it queues the submitted user prompt and completed text assistant response for ordered background delivery.
 
 Remote startup, recall, delivery, and retry do not block normal Pi operation. If Honcho is offline or disabled, Pi continues and local knowledge tools remain available.
 

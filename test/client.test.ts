@@ -410,15 +410,11 @@ test("maps cached recall, delivery, reconciliation, and tool operations", async 
 
 	assert.deepEqual(await client.fetchCachedMemory("project"), {
 		summary: "project summary",
-		userRepresentation: "user representation",
 	});
 	assert.deepEqual(session.contextCalls, [
 		{
 			summary: true,
 			tokens: 800,
-			peerPerspective: pi,
-			peerTarget: fake.peersById.get("user"),
-			limitToSession: false,
 		},
 	]);
 	assert.deepEqual(session.addedPeerSets, [
@@ -805,14 +801,16 @@ test("rejects empty or malformed responses without poisoning later calls", async
 	);
 	assert.equal(await client.remember("project", "remember me"), "conclusion-2");
 
-	session.contextResponses.push(null, { peerCard: ["card item"] });
+	session.contextResponses.push(null, {
+		peerRepresentation: "giuseppe is not allowed to edit any file.",
+		peerCard: ["giuseppe is operating in read-only mode."],
+	});
 	await assert.rejects(
 		client.fetchCachedMemory("project"),
 		/malformed context/i,
 	);
 	assert.deepEqual(await client.fetchCachedMemory("project"), {
 		summary: undefined,
-		userRepresentation: "card item",
 	});
 
 	session.addMessageResponses.push([], new Error("remote delivery failed"));
