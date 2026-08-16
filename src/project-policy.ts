@@ -1,6 +1,8 @@
 import { readFile } from "node:fs/promises"; // pi-lens-ignore: find-import-file-without-extension
 import { dirname, join, relative, resolve } from "node:path";
 
+import { isValidHonchoWorkspaceId } from "./config.js";
+
 const POLICY_FILE = join(".pi", "honcho-memory.json");
 const MAX_WORKSPACE_ID_LENGTH = 128;
 
@@ -29,10 +31,9 @@ function disabled(
 }
 
 function workspaceId(value: unknown): string | undefined {
-	if (typeof value !== "string") return undefined;
-	const trimmed = value.trim();
-	return trimmed && trimmed.length <= MAX_WORKSPACE_ID_LENGTH
-		? trimmed
+	return isValidHonchoWorkspaceId(value) &&
+		value.length <= MAX_WORKSPACE_ID_LENGTH
+		? value
 		: undefined;
 }
 
@@ -70,7 +71,7 @@ export function resolveProjectHonchoPolicy(
 	if (workspace !== undefined && !resolvedWorkspace)
 		return disabled(
 			path,
-			`Project policy workspace must be a non-empty value of at most ${MAX_WORKSPACE_ID_LENGTH} characters`,
+			`Project policy workspace must use only letters, digits, underscores, or hyphens and be at most ${MAX_WORKSPACE_ID_LENGTH} characters`,
 		);
 	if (enabled && !resolvedWorkspace)
 		return disabled(path, "Enabled project policy must provide a workspace");

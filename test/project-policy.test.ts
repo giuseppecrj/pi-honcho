@@ -36,6 +36,17 @@ test("writes project policies atomically at the reported target", async () => {
 		(await readdir(join(root, ".pi"))).filter((name) => name.endsWith(".tmp")),
 		[],
 	);
+	assert.equal(
+		await saveProjectHonchoPolicy(root, {
+			enabled: true,
+			workspace: "invalid.workspace",
+		}),
+		undefined,
+	);
+	assert.equal(
+		await readFile(target, "utf8"),
+		'{\n  "enabled": true,\n  "workspace": "project-memory"\n}\n',
+	);
 });
 
 test("a trusted project requires an explicit enabled policy with a workspace", () => {
@@ -82,6 +93,13 @@ test("untrusted projects ignore their policy", () => {
 		},
 	);
 	assert.equal(projectHonchoEnabled(false, { enabled: false }), true);
+	assert.equal(
+		projectHonchoEnabled(false, {
+			enabled: true,
+			workspace: "invalid.workspace",
+		}),
+		true,
+	);
 });
 
 test("malformed project policies fail closed with an actionable reason", () => {
@@ -89,6 +107,8 @@ test("malformed project policies fail closed with an actionable reason", () => {
 		{},
 		{ enabled: true },
 		{ enabled: true, workspace: "" },
+		{ enabled: true, workspace: "invalid.workspace" },
+		{ enabled: true, workspace: "invalid workspace" },
 		{ enabled: true, workspace: "x".repeat(129) },
 		{ enabled: true, workspace: "work", apiKey: "secret" },
 	]) {
@@ -99,6 +119,15 @@ test("malformed project policies fail closed with an actionable reason", () => {
 		);
 		assert.equal(resolution.enabled, false);
 		assert.match(resolution.reason ?? "", /policy/i);
+		if (
+			(policy as { workspace?: unknown }).workspace !== undefined &&
+			!("apiKey" in policy)
+		) {
+			assert.match(
+				resolution.reason ?? "",
+				/letters, digits, underscores, or hyphens/,
+			);
+		}
 	}
 });
 

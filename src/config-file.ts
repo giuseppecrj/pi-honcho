@@ -5,7 +5,7 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 
-import { HONCHO_HOST_NAME } from "./config.js";
+import { HONCHO_HOST_NAME, isValidHonchoWorkspaceId } from "./config.js";
 import {
 	discoverProjectHonchoPolicy,
 	isValidProjectHonchoPolicy,
@@ -98,6 +98,7 @@ export async function saveHonchoSettings(settings: {
 	peerName: string;
 	aiPeer: string;
 }): Promise<boolean> {
+	if (!isValidHonchoWorkspaceId(settings.workspaceId)) return false;
 	try {
 		const existing = await loadHonchoConfigFile();
 		const config = existing && typeof existing === "object" ? existing : {};

@@ -12,6 +12,10 @@ import honchoMemory from "../src/index.js";
 
 class FakePiRuntime {
 	readonly handlers = new Map<string, unknown>();
+	readonly commands = new Map<
+		string,
+		{ handler: (args: string, ctx: ExtensionContext) => Promise<void> }
+	>();
 	readonly entries: Array<{ customType: string; data: unknown }> = [];
 	activeTools = ["read"];
 
@@ -23,7 +27,14 @@ class FakePiRuntime {
 		this.activeTools.push(tool.name);
 	}
 
-	registerCommand(): void {}
+	registerCommand(
+		name: string,
+		command: {
+			handler: (args: string, ctx: ExtensionContext) => Promise<void>;
+		},
+	): void {
+		this.commands.set(name, command);
+	}
 
 	appendEntry(customType: string, data: unknown): void {
 		this.entries.push({ customType, data });
@@ -104,6 +115,74 @@ test("fails open and keeps Honcho tools inactive when startup is disabled", asyn
 		assert.deepEqual(pi.entries, []);
 	} finally {
 		restoreEnvironment("HONCHO_ENABLED", previous);
+	}
+});
+
+test("rejects invalid global setup workspaces before saving settings", async () => {
+	const pi = new FakePiRuntime();
+	const notifications: Array<{ message: string; level: string }> = [];
+	let inputs = 0;
+	honchoMemory(pi as unknown as ExtensionAPI);
+	const setup = pi.commands.get("honcho-setup")?.handler;
+	assert.ok(setup);
+
+	await setup("", {
+		...startupContext(),
+		ui: {
+			input: async () => {
+				inputs += 1;
+				return "invalid.workspace";
+			},
+			notify: (message: string, level: string) =>
+				notifications.push({ message, level }),
+			setStatus: () => undefined,
+		},
+	} as unknown as ExtensionContext);
+
+	assert.equal(inputs, 1);
+	assert.equal(notifications[0].level, "warning");
+	assert.match(
+		notifications[0].message,
+		/letters, digits, underscores, or hyphens/,
+	);
+});
+
+test("does not create a client for an invalid effective workspace", async () => {
+	const previous = Object.fromEntries(
+		["HONCHO_API_KEY", "HONCHO_WORKSPACE_ID", "HONCHO_ENABLED"].map((name) => [
+			name,
+			process.env[name],
+		]),
+	);
+	process.env.HONCHO_API_KEY = "test-key";
+	process.env.HONCHO_WORKSPACE_ID = "invalid.workspace";
+	delete process.env.HONCHO_ENABLED;
+	try {
+		const pi = new FakePiRuntime();
+		const statuses: string[] = [];
+		let factoryCalls = 0;
+		honchoMemory(pi as unknown as ExtensionAPI, () => {
+			factoryCalls += 1;
+			throw new Error("unexpected client creation");
+		});
+		const handler = pi.handlers.get("session_start") as (
+			event: { reason: "startup" },
+			ctx: ExtensionContext,
+		) => Promise<void>;
+
+		await handler({ reason: "startup" }, startupContext(statuses));
+
+		assert.equal(factoryCalls, 0);
+		assert.deepEqual(pi.activeTools, ["read"]);
+		assert.match(
+			statuses.at(-1) ?? "",
+			/unconfigured — Invalid workspace ID from environment/,
+		);
+		assert.match(statuses.at(-1) ?? "", /HONCHO_WORKSPACE_ID/);
+	} finally {
+		restoreEnvironment("HONCHO_API_KEY", previous.HONCHO_API_KEY);
+		restoreEnvironment("HONCHO_WORKSPACE_ID", previous.HONCHO_WORKSPACE_ID);
+		restoreEnvironment("HONCHO_ENABLED", previous.HONCHO_ENABLED);
 	}
 });
 

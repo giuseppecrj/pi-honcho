@@ -42,6 +42,13 @@ function nonEmptyString(value: unknown): string | undefined {
 	return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function workspaceString(value: unknown): string | undefined {
+	return typeof value === "string" ? value : undefined;
+}
+
+export const isValidHonchoWorkspaceId = (value: unknown): value is string =>
+	typeof value === "string" && /^[a-zA-Z0-9_-]+$/.test(value);
+
 function positiveInteger(value: string | undefined, fallback: number): number {
 	const parsed = Number.parseInt(value ?? "", 10);
 	return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
@@ -72,7 +79,8 @@ function hostSettings(configFile: unknown): HostSettings | undefined {
 			nonEmptyString(primary.environmentUrl) ??
 			nonEmptyString(legacy.environmentUrl),
 		workspaceId:
-			nonEmptyString(primary.workspaceId) ?? nonEmptyString(legacy.workspaceId),
+			workspaceString(primary.workspaceId) ??
+			workspaceString(legacy.workspaceId),
 		peerName:
 			nonEmptyString(primary.peerName) ?? nonEmptyString(legacy.peerName),
 		aiPeer: nonEmptyString(primary.aiPeer) ?? nonEmptyString(legacy.aiPeer),
@@ -85,17 +93,17 @@ function resolvedWorkspace(
 	cli: HostSettings | undefined,
 	projectWorkspaceId: string | undefined,
 ): Pick<HonchoConnectionConfig, "workspaceId" | "workspaceSource"> {
-	const environment = nonEmptyString(env.HONCHO_WORKSPACE_ID);
-	if (environment)
+	const environment = workspaceString(env.HONCHO_WORKSPACE_ID);
+	if (environment !== undefined)
 		return { workspaceId: environment, workspaceSource: "environment" };
-	if (projectWorkspaceId)
+	if (projectWorkspaceId !== undefined)
 		return {
 			workspaceId: projectWorkspaceId,
 			workspaceSource: "project policy",
 		};
 	const configured =
-		nonEmptyString(host?.workspaceId) ?? nonEmptyString(cli?.workspaceId);
-	if (configured)
+		workspaceString(host?.workspaceId) ?? workspaceString(cli?.workspaceId);
+	if (configured !== undefined)
 		return { workspaceId: configured, workspaceSource: "Honcho config" };
 	return { workspaceId: DEFAULT_WORKSPACE_ID, workspaceSource: "default" };
 }
@@ -111,6 +119,21 @@ export function resolveHonchoWorkspace(
 		settings(configFile),
 		projectWorkspaceId,
 	);
+}
+
+function invalidWorkspaceReason(
+	workspaceSource: HonchoConnectionConfig["workspaceSource"],
+): string {
+	switch (workspaceSource) {
+		case "environment":
+			return "Invalid workspace ID from environment. Set HONCHO_WORKSPACE_ID to use only letters, digits, underscores, or hyphens.";
+		case "project policy":
+			return "Invalid workspace ID from project policy. Correct the trusted project policy workspace to use only letters, digits, underscores, or hyphens.";
+		case "Honcho config":
+			return "Invalid workspace ID from Honcho config. Set workspaceId to use only letters, digits, underscores, or hyphens.";
+		case "default":
+			return "Invalid default workspace ID.";
+	}
 }
 
 function preferredValue(
@@ -165,6 +188,14 @@ export function resolveHonchoConfig(
 		return { kind: "unconfigured", reason: "No Honcho API key is configured" };
 	}
 
+	const workspace = resolvedWorkspace(env, host, cli, projectWorkspaceId);
+	if (!isValidHonchoWorkspaceId(workspace.workspaceId)) {
+		return {
+			kind: "unconfigured",
+			reason: invalidWorkspaceReason(workspace.workspaceSource),
+		};
+	}
+
 	return {
 		kind: "configured",
 		config: {
@@ -174,7 +205,7 @@ export function resolveHonchoConfig(
 				host?.environmentUrl,
 				cli?.environmentUrl,
 			),
-			...resolvedWorkspace(env, host, cli, projectWorkspaceId),
+			...workspace,
 			peerName: preferredValue(
 				env.HONCHO_PEER_NAME,
 				host?.peerName,

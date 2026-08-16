@@ -1,5 +1,6 @@
 import { basename, join, resolve } from "node:path";
 
+import { isValidHonchoWorkspaceId } from "./config.js";
 import { isValidProjectHonchoPolicy } from "./project-policy.js";
 
 export interface ProjectPolicyCommandContext {
@@ -70,9 +71,9 @@ export async function setupProjectPolicy(
 		"Honcho workspace",
 		projectPolicyWorkspaceSuggestion(ctx.cwd),
 	);
-	if (!workspace?.trim()) {
+	if (!isValidHonchoWorkspaceId(workspace)) {
 		ctx.notify(
-			"An enabled project policy requires a non-empty workspace.",
+			"Workspace IDs must use only letters, digits, underscores, or hyphens.",
 			"warning",
 		);
 		return;
@@ -80,7 +81,7 @@ export async function setupProjectPolicy(
 	if (
 		!(await ctx.confirm(
 			"Save enabled Honcho policy?",
-			`Workspace: ${workspace.trim()}\nTarget: ${store.path}`,
+			`Workspace: ${workspace}\nTarget: ${store.path}`,
 		))
 	)
 		return;
@@ -88,7 +89,7 @@ export async function setupProjectPolicy(
 	if (!(await allowReplacement(ctx, store, existing))) return;
 	const path = await store.write({
 		enabled: true,
-		workspace: workspace.trim(),
+		workspace,
 	});
 	if (!path) {
 		ctx.notify("Could not save a valid non-secret project policy.", "error");

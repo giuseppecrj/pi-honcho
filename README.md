@@ -158,6 +158,8 @@ A dedicated host block keeps this extension's identity separate from other Honch
 
 `/honcho setup` writes only `workspaceId`, `peerName`, and `aiPeer`. It never asks for or stores an API key.
 
+Workspace IDs must contain only letters, digits, `_`, and `-`, for example `pi-user_1`. Pi rejects invalid IDs without changing them. If configuration is rejected, correct `HONCHO_WORKSPACE_ID` or `workspaceId` in Honcho config, then reload Pi.
+
 ### Environment variables
 
 | Variable | Purpose | Default |
@@ -202,7 +204,7 @@ Disable remote memory:
 }
 ```
 
-Pi ignores project policy files until the project is trusted. A policy may contain only `enabled` and an optional `workspace`. Do not put credentials or endpoint settings in it. An ancestor opt-out also applies to child directories.
+Pi ignores project policy files until the project is trusted. A policy may contain only `enabled` and an optional `workspace`. Workspace IDs must contain only letters, digits, `_`, and `-`; correct an invalid trusted policy file and reload Pi. Do not put credentials or endpoint settings in it. An ancestor opt-out also applies to child directories.
 
 ## Privacy and data lifecycle
 

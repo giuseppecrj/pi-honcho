@@ -59,6 +59,21 @@ test("setup requires trust, proposes the directory basename, confirms replacemen
 	assert.match(ctx.notifications[0].message, /Start a fresh conversation/i);
 });
 
+test("setup rejects an invalid workspace before confirmation or write", async () => {
+	const ctx = context({ input: async () => "invalid.workspace" });
+	const policyStore = store(undefined);
+
+	await setupProjectPolicy(ctx, policyStore);
+
+	assert.deepEqual(ctx.confirmations, []);
+	assert.deepEqual(policyStore.writes, []);
+	assert.equal(ctx.notifications[0].level, "warning");
+	assert.match(
+		ctx.notifications[0].message,
+		/letters, digits, underscores, or hyphens/,
+	);
+});
+
 test("setup ignores untrusted projects", async () => {
 	const ctx = context({ isProjectTrusted: () => false });
 

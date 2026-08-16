@@ -21,6 +21,7 @@ import {
 	deletionTarget,
 	type HonchoConfiguration,
 	type HonchoConnectionConfig,
+	isValidHonchoWorkspaceId,
 	resolveHonchoConfig,
 	resolveHonchoWorkspace,
 } from "./config.js";
@@ -704,6 +705,13 @@ export default function honchoMemory(
 			"Honcho workspace",
 			statusDetails.workspaceId ?? "pi",
 		);
+		if (!isValidHonchoWorkspaceId(workspaceId)) {
+			ctx.ui.notify(
+				"Workspace IDs must use only letters, digits, underscores, or hyphens.",
+				"warning",
+			);
+			return;
+		}
 		const peerName = await ctx.ui.input(
 			"Stable user peer",
 			statusDetails.userPeer ?? "user",

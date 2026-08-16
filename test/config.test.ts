@@ -133,9 +133,103 @@ test("uses the Honcho CLI's top-level credentials when no override is set", () =
 	assert.equal(result.config.baseUrl, environmentUrl);
 });
 
-test("an explicit disable wins over otherwise valid credentials", () => {
+test("workspace IDs accept only SDK-compatible characters", () => {
+	for (const workspaceId of ["a", "Z", "0", "_", "-", "Az09_-"])
+		assert.equal(
+			resolveHonchoConfig(
+				{ HONCHO_API_KEY: "key", HONCHO_WORKSPACE_ID: workspaceId },
+				{},
+			).kind,
+			"configured",
+		);
+	for (const workspaceId of ["", "micro.design", "has space", " pi ", "π"])
+		assert.equal(
+			resolveHonchoConfig(
+				{ HONCHO_API_KEY: "key", HONCHO_WORKSPACE_ID: workspaceId },
+				{},
+			).kind,
+			"unconfigured",
+		);
+});
+
+test("invalid effective workspaces are unconfigured without fallback or normalization", () => {
+	for (const { env, configFile, projectWorkspaceId, source, repair } of [
+		{
+			env: { HONCHO_API_KEY: "key", HONCHO_WORKSPACE_ID: "env.workspace" },
+			configFile: { hosts: { "pi-honcho": { workspaceId: "configured" } } },
+			projectWorkspaceId: "project",
+			source: "environment",
+			repair: "HONCHO_WORKSPACE_ID",
+		},
+		{
+			env: { HONCHO_API_KEY: "key" },
+			configFile: { hosts: { "pi-honcho": { workspaceId: "configured" } } },
+			projectWorkspaceId: "project.workspace",
+			source: "project policy",
+			repair: "trusted project policy",
+		},
+		{
+			env: { HONCHO_API_KEY: "key" },
+			configFile: {
+				hosts: {
+					"pi-honcho": { workspaceId: "configured.workspace" },
+					"pi-honcho-memory": { workspaceId: "legacy" },
+				},
+			},
+			projectWorkspaceId: undefined,
+			source: "Honcho config",
+			repair: "workspaceId",
+		},
+		{
+			env: { HONCHO_API_KEY: "key" },
+			configFile: { workspaceId: "configured.workspace" },
+			projectWorkspaceId: undefined,
+			source: "Honcho config",
+			repair: "workspaceId",
+		},
+		{
+			env: { HONCHO_API_KEY: "key", HONCHO_WORKSPACE_ID: " pi " },
+			configFile: {},
+			projectWorkspaceId: undefined,
+			source: "environment",
+			repair: "HONCHO_WORKSPACE_ID",
+		},
+	]) {
+		const result = resolveHonchoConfig(env, configFile, projectWorkspaceId);
+		assert.equal(result.kind, "unconfigured");
+		if (result.kind !== "unconfigured") continue;
+		assert.match(result.reason, new RegExp(source));
+		assert.match(result.reason, new RegExp(repair));
+		assert.match(result.reason, /letters, digits, underscores, or hyphens/);
+	}
+});
+
+test("valid higher-precedence workspaces shadow invalid lower-precedence values", () => {
+	for (const [env, projectWorkspaceId] of [
+		[
+			{ HONCHO_API_KEY: "key", HONCHO_WORKSPACE_ID: "environment" },
+			"project.workspace",
+		],
+		[{ HONCHO_API_KEY: "key" }, "project"],
+	] as const) {
+		const result = resolveHonchoConfig(
+			env,
+			{
+				hosts: { "pi-honcho": { workspaceId: "configured.workspace" } },
+			},
+			projectWorkspaceId,
+		);
+		assert.equal(result.kind, "configured");
+	}
+});
+
+test("an explicit disable wins over otherwise invalid workspace configuration", () => {
 	const result = resolveHonchoConfig(
-		{ HONCHO_ENABLED: "false", HONCHO_API_KEY: "key" },
+		{
+			HONCHO_ENABLED: "false",
+			HONCHO_API_KEY: "key",
+			HONCHO_WORKSPACE_ID: "invalid.workspace",
+		},
 		{},
 	);
 
@@ -214,6 +308,15 @@ test("setup writes only non-secret primary settings and preserves unrelated conf
 			peerName: "setup-user",
 			aiPeer: "setup-ai",
 		});
+		assert.equal(
+			await saveHonchoSettings({
+				workspaceId: "invalid.workspace",
+				peerName: "other-user",
+				aiPeer: "other-ai",
+			}),
+			false,
+		);
+		assert.deepEqual(JSON.parse(await readFile(path, "utf8")), saved);
 	} finally {
 		if (previousHome === undefined) delete process.env.HOME;
 		else process.env.HOME = previousHome;
