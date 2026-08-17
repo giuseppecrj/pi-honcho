@@ -7,7 +7,7 @@ import {
 	isolatedRemoteSessionId,
 	latestRemoteMessageAtFork,
 	resolveForkRemoteSession,
-} from "../src/fork.js";
+} from "../src/remote/fork.js";
 
 const entry = (id: string, parentId: string | null = null) => ({
 	id,

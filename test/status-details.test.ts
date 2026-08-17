@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"; // pi-lens-ignore: find-import-file-without-extension
 import test from "node:test";
 
-import { formatStatusDetails } from "./status-details.js";
+import { formatStatusDetails } from "../src/remote/status-details.js";
 
 test("formats the effective workspace boundary and policy failure", () => {
 	assert.equal(

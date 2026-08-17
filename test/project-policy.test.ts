@@ -3,12 +3,12 @@ import { mkdir, mkdtemp, readdir, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { saveProjectHonchoPolicy } from "../src/config-file.js";
+import { saveProjectHonchoPolicy } from "../src/remote/config-file.js";
 import {
 	discoverProjectHonchoPolicy,
 	projectHonchoEnabled,
 	resolveProjectHonchoPolicy,
-} from "../src/project-policy.js";
+} from "../src/remote/project-policy.js";
 
 const policyFile = ".pi/honcho-memory.json";
 

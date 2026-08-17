@@ -2,10 +2,10 @@
 
 ## pi-hermes-memory
 
-`src/local-tools.ts` adapts session search behavior from `pi-hermes-memory`.
-`src/skill-store.ts` and `src/skill-tool.ts` adapt the procedural skill store and tool behavior from `pi-hermes-memory`.
-`src/content-scanner.ts` adapts the content scanner used for secret and injection checks from `pi-hermes-memory`.
-`src/standing-instructions.ts` adapts standing-instruction storage, `/memory-pin`, and system-prompt injection from `pi-hermes-memory`.
+`src/local/index.ts` adapts session search behavior from `pi-hermes-memory`.
+`src/local/skill-store.ts` and `src/local/skill-tool.ts` adapt the procedural skill store and tool behavior from `pi-hermes-memory`.
+`src/local/content-scanner.ts` adapts the content scanner used for secret and injection checks from `pi-hermes-memory`.
+`src/local/standing-instructions.ts` adapts standing-instruction storage, `/memory-pin`, and system-prompt injection from `pi-hermes-memory`.
 
 MIT License
 

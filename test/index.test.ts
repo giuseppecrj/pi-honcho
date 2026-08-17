@@ -8,7 +8,7 @@ import {
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
-import honchoMemory from "../src/index.js";
+import honchoMemory from "../src/remote/index.js";
 
 class FakePiRuntime {
 	readonly handlers = new Map<string, unknown>();
@@ -95,6 +95,83 @@ test("does not register remote Honcho behavior in a Herdr subagent", () => {
 		assert.deepEqual(pi.entries, []);
 	} finally {
 		restoreEnvironment("PI_SUBAGENT_ID", previous);
+	}
+});
+
+test("uses a legacy Pi session mapping for startup recall", async () => {
+	const previous = Object.fromEntries(
+		["HONCHO_API_KEY", "HONCHO_ENABLED", "PI_SUBAGENT_ID"].map((name) => [
+			name,
+			process.env[name],
+		]),
+	);
+	process.env.HONCHO_API_KEY = "test-key";
+	delete process.env.HONCHO_ENABLED;
+	delete process.env.PI_SUBAGENT_ID;
+	const branch: unknown[] = [
+		{
+			type: "custom",
+			customType: "pi-honcho-memory.session",
+			data: { remoteSessionId: "legacy-remote-session" },
+		},
+	];
+	let recalledSessionId: string | undefined;
+	const client = {
+		checkConnection: async () => undefined,
+		fetchCachedMemory: async (sessionId: string) => {
+			recalledSessionId = sessionId;
+			return {};
+		},
+		deliverExchange: async () => [],
+		reconcileOperationId: async () => [],
+		cloneSession: async () => "cloned-session",
+		search: async () => [],
+		chat: async () => undefined,
+		remember: async () => "conclusion-1",
+		deleteSession: async () => undefined,
+		deleteConclusion: async () => undefined,
+		inspectWorkspace: async () => ({
+			workspaceId: "pi",
+			peerIds: [],
+			sessionCount: 0,
+			conclusionCount: 0,
+		}),
+		deleteWorkspace: async () => undefined,
+	};
+	const sessionManager = SessionManager as unknown as {
+		listAll: () => Promise<Array<{ path: string }>>;
+	};
+	const listAll = sessionManager.listAll;
+	sessionManager.listAll = async () => [];
+	const context = {
+		...startupContext(),
+		sessionManager: {
+			getSessionId: () => "pi-session",
+			getEntries: () => branch,
+			getBranch: () => branch,
+		},
+	} as unknown as ExtensionContext;
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI, () => client);
+	const sessionStart = pi.handlers.get("session_start") as (
+		event: { reason: "startup" },
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	const sessionShutdown = pi.handlers.get("session_shutdown") as (
+		event: unknown,
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	try {
+		await sessionStart({ reason: "startup" }, context);
+		await waitFor(() => recalledSessionId !== undefined);
+		assert.equal(recalledSessionId, "legacy-remote-session");
+		assert.ok(!recalledSessionId.startsWith("repo-v2-"));
+	} finally {
+		await sessionShutdown({}, context);
+		sessionManager.listAll = listAll;
+		restoreEnvironment("HONCHO_API_KEY", previous.HONCHO_API_KEY);
+		restoreEnvironment("HONCHO_ENABLED", previous.HONCHO_ENABLED);
+		restoreEnvironment("PI_SUBAGENT_ID", previous.PI_SUBAGENT_ID);
 	}
 });
 
@@ -204,6 +281,11 @@ test("uses remote reconciliation only for pending recovery delivery", async () =
 			},
 		},
 	];
+	const sessionManager = SessionManager as unknown as {
+		listAll: () => Promise<Array<{ path: string }>>;
+	};
+	const listAll = sessionManager.listAll;
+	sessionManager.listAll = async () => [];
 	const reconciled: string[] = [];
 	const delivered: string[] = [];
 	let cachedMemoryRequests = 0;
@@ -325,6 +407,7 @@ test("uses remote reconciliation only for pending recovery delivery", async () =
 		]);
 	} finally {
 		await sessionShutdown({}, context);
+		sessionManager.listAll = listAll;
 		restoreEnvironment("HONCHO_API_KEY", previous);
 	}
 });

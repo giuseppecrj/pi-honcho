@@ -10,8 +10,9 @@ import {
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
-import honchoMemory from "../src/index.js";
-import localKnowledgeTools from "../src/local-tools.js";
+import piHoncho from "../src/index.js";
+import localKnowledgeTools from "../src/local/index.js";
+import honchoMemory from "../src/remote/index.js";
 
 type ToolResult = {
 	content: Array<{ type?: string; text: string }>;
@@ -200,15 +201,8 @@ async function skillOutput(
 	}
 }
 
-async function loadBoth(
-	options: {
-		root?: string;
-		cwd?: string;
-		standingFilePath?: string;
-		standingEnabled?: boolean;
-		agentDir?: string;
-		createClient?: () => ReturnType<typeof connectedClient>;
-	} = {},
+async function loadPackage(
+	options: { root?: string; cwd?: string } = {},
 ): Promise<{
 	pi: PackageFakePi;
 	root: string;
@@ -220,28 +214,21 @@ async function loadBoth(
 		(await mkdtemp(join(tmpdir(), "pi-honcho-package-parity-")));
 	const cwd = options.cwd ?? join(root, "repo");
 	await mkdir(cwd, { recursive: true });
+	const previousAgentDir = process.env.PI_CODING_AGENT_DIR;
+	const previousSessionDir = process.env.PI_CODING_AGENT_SESSION_DIR;
+	process.env.PI_CODING_AGENT_DIR = join(root, "agent");
+	process.env.PI_CODING_AGENT_SESSION_DIR = join(root, "sessions");
 	const pi = new PackageFakePi();
-	// package.json order: Honcho module, then local knowledge tools.
-	honchoMemory(
-		pi as unknown as ExtensionAPI,
-		options.createClient ? () => options.createClient?.() as never : undefined,
-	);
-	localKnowledgeTools(pi as unknown as ExtensionAPI, {
-		sessionsDir: join(root, "sessions"),
-		databasePath: join(root, "index.sqlite"),
-		globalSkillsDir: join(root, "skills"),
-		piGlobalSkillsDir: join(root, "pi-skills"),
-		projectsMemoryDir: join(root, "projects"),
-		agentDir: options.agentDir ?? join(root, "agent"),
-		standingFilePath: options.standingFilePath,
-		standingEnabled: options.standingEnabled,
-		cwd,
-	});
+	piHoncho(pi as unknown as ExtensionAPI);
 	return {
 		pi,
 		root,
 		cwd,
-		cleanup: () => rm(root, { recursive: true, force: true }),
+		cleanup: async () => {
+			restoreEnvironment("PI_CODING_AGENT_DIR", previousAgentDir);
+			restoreEnvironment("PI_CODING_AGENT_SESSION_DIR", previousSessionDir);
+			await rm(root, { recursive: true, force: true });
+		},
 	};
 }
 
@@ -264,10 +251,10 @@ async function chainBeforeAgentStart(
 	return prompt;
 }
 
-test("package loads both extension modules with unique tools and commands", async () => {
+test("package root registers remote then local behavior exactly once", async () => {
 	const previousEnabled = process.env.HONCHO_ENABLED;
 	process.env.HONCHO_ENABLED = "0";
-	const fixture = await loadBoth();
+	const fixture = await loadPackage();
 	try {
 		assert.deepEqual([...fixture.pi.tools.keys()].sort(), EXPECTED_TOOLS);
 		assert.deepEqual([...fixture.pi.commands.keys()].sort(), EXPECTED_COMMANDS);
@@ -285,17 +272,24 @@ test("package loads both extension modules with unique tools and commands", asyn
 				`retired Hermes command still registered: ${name}`,
 			);
 
-		// Shared before_agent_start is intentional and additive.
-		assert.equal(
-			(fixture.pi.handlers.get("before_agent_start") ?? []).length,
-			2,
+		assert.deepEqual(
+			Object.fromEntries(
+				[...fixture.pi.handlers]
+					.sort(([left], [right]) => left.localeCompare(right))
+					.map(([name, handlers]) => [name, handlers.length]),
+			),
+			{
+				agent_settled: 1,
+				before_agent_start: 2,
+				context: 1,
+				resources_discover: 1,
+				session_before_compact: 1,
+				session_before_fork: 1,
+				session_before_switch: 1,
+				session_shutdown: 1,
+				session_start: 1,
+			},
 		);
-		assert.equal((fixture.pi.handlers.get("session_start") ?? []).length, 1);
-		assert.equal(
-			(fixture.pi.handlers.get("resources_discover") ?? []).length,
-			1,
-		);
-		assert.equal((fixture.pi.handlers.get("agent_settled") ?? []).length, 1);
 	} finally {
 		await fixture.cleanup();
 		restoreEnvironment("HONCHO_ENABLED", previousEnabled);
@@ -305,26 +299,29 @@ test("package loads both extension modules with unique tools and commands", asyn
 test("Herdr subagents load only local knowledge behavior", async () => {
 	const previous = process.env.PI_SUBAGENT_ID;
 	process.env.PI_SUBAGENT_ID = "child-1";
-	const fixture = await loadBoth();
+	const fixture = await loadPackage();
 	try {
 		assert.deepEqual([...fixture.pi.tools.keys()].sort(), [
 			"session_search",
 			"skill_manage",
 		]);
 		assert.deepEqual([...fixture.pi.commands.keys()], ["memory-pin"]);
-		assert.equal(
-			(fixture.pi.handlers.get("before_agent_start") ?? []).length,
-			1,
+		assert.deepEqual(
+			Object.fromEntries(
+				[...fixture.pi.handlers].map(([name, handlers]) => [
+					name,
+					handlers.length,
+				]),
+			),
+			{ before_agent_start: 1, resources_discover: 1 },
 		);
-		assert.equal(fixture.pi.handlers.has("session_start"), false);
-		assert.equal(fixture.pi.handlers.has("agent_settled"), false);
 	} finally {
 		await fixture.cleanup();
 		restoreEnvironment("PI_SUBAGENT_ID", previous);
 	}
 });
 
-test("both modules exercise session_search, skill_manage create, and resources_discover", async () => {
+test("package root exposes local tools and resources while Honcho is disabled", async () => {
 	const previousEnabled = process.env.HONCHO_ENABLED;
 	process.env.HONCHO_ENABLED = "0";
 	const root = await mkdtemp(join(tmpdir(), "pi-honcho-package-exercise-"));
@@ -350,7 +347,7 @@ test("both modules exercise session_search, skill_manage create, and resources_d
 		]),
 	);
 
-	const fixture = await loadBoth({ root, cwd });
+	const fixture = await loadPackage({ root, cwd });
 	try {
 		const search = fixture.pi.tools.get("session_search");
 		const skills = fixture.pi.tools.get("skill_manage");
@@ -400,11 +397,19 @@ test("both modules exercise session_search, skill_manage create, and resources_d
 
 		const discovered = await resources({ cwd });
 		assert.ok(
-			discovered.skillPaths?.includes(join(root, "projects", "repo", "skills")),
+			discovered.skillPaths?.includes(join(root, "agent", "projects-memory", "repo", "skills")),
 		);
 		assert.equal(
 			await readFile(
-				join(root, "projects", "repo", "skills", "parity-probe", "SKILL.md"),
+				join(
+					root,
+					"agent",
+					"projects-memory",
+					"repo",
+					"skills",
+					"parity-probe",
+					"SKILL.md",
+				),
 				"utf8",
 			).then((text) => text.includes("parity-probe")),
 			true,
@@ -415,7 +420,7 @@ test("both modules exercise session_search, skill_manage create, and resources_d
 	}
 });
 
-test("standing instructions inject offline and after a real connected Honcho startup", async () => {
+test("package root adds standing instructions after the offline remote handler", async () => {
 	const root = await mkdtemp(join(tmpdir(), "pi-honcho-package-standing-"));
 	const agentDir = join(root, "agent");
 	const standingFilePath = join(agentDir, "pi-hermes-memory", "STANDING.md");
@@ -437,19 +442,28 @@ test("standing instructions inject offline and after a real connected Honcho sta
 	try {
 		process.env.HONCHO_ENABLED = "0";
 		delete process.env.HONCHO_API_KEY;
-		const offline = await loadBoth({
-			root: join(root, "offline"),
-			agentDir,
-			standingFilePath,
-			standingEnabled: true,
+		const offlineRoot = join(root, "offline");
+		await mkdir(join(offlineRoot, "agent", "pi-hermes-memory"), {
+			recursive: true,
 		});
+		await writeFile(
+			join(offlineRoot, "agent", "pi-hermes-memory", "STANDING.md"),
+			"Prefer small focused diffs\n",
+			"utf8",
+		);
+		const offline = await loadPackage({ root: offlineRoot });
 		try {
 			const handlers = offline.pi.handlers.get("before_agent_start") ?? [];
 			assert.equal(handlers.length, 2);
+			const ctx = startupContext(offline.cwd);
+			assert.equal(
+				await chainBeforeAgentStart([handlers[0]], "base system prompt", ctx),
+				"base system prompt",
+			);
 			const prompt = await chainBeforeAgentStart(
 				handlers,
 				"base system prompt",
-				startupContext(offline.cwd),
+				ctx,
 			);
 			assert.match(prompt, /<standing-instructions>/);
 			assert.match(prompt, /Prefer small focused diffs/);
@@ -461,18 +475,25 @@ test("standing instructions inject offline and after a real connected Honcho sta
 		process.env.HONCHO_API_KEY = "test-key";
 		delete process.env.HONCHO_ENABLED;
 		const statuses: string[] = [];
-		const connected = await loadBoth({
-			root: join(root, "connected"),
+		const connectedRoot = join(root, "connected");
+		const connectedCwd = join(connectedRoot, "repo");
+		await mkdir(connectedCwd, { recursive: true });
+		const connectedPi = new PackageFakePi();
+		honchoMemory(
+			connectedPi as unknown as ExtensionAPI,
+			() => connectedClient() as never,
+		);
+		localKnowledgeTools(connectedPi as unknown as ExtensionAPI, {
 			agentDir,
 			standingFilePath,
 			standingEnabled: true,
-			createClient: connectedClient,
+			cwd: connectedCwd,
 		});
-		const ctx = startupContext(connected.cwd, statuses);
-		const sessionStart = connected.pi.handlers.get("session_start")?.[0] as
+		const ctx = startupContext(connectedCwd, statuses);
+		const sessionStart = connectedPi.handlers.get("session_start")?.[0] as
 			| ((event: { reason: "startup" }, ctx: ExtensionContext) => Promise<void>)
 			| undefined;
-		const sessionShutdown = connected.pi.handlers.get(
+		const sessionShutdown = connectedPi.handlers.get(
 			"session_shutdown",
 		)?.[0] as
 			| ((event: unknown, ctx: ExtensionContext) => Promise<void>)
@@ -482,15 +503,15 @@ test("standing instructions inject offline and after a real connected Honcho sta
 			await sessionStart({ reason: "startup" }, ctx);
 			await waitFor(
 				() =>
-					connected.pi.activeTools.includes("honcho_search") &&
-					connected.pi.activeTools.includes("honcho_chat") &&
-					connected.pi.activeTools.includes("honcho_remember"),
+					connectedPi.activeTools.includes("honcho_search") &&
+					connectedPi.activeTools.includes("honcho_chat") &&
+					connectedPi.activeTools.includes("honcho_remember"),
 			);
 			assert.ok(
 				statuses.some((status) => /^Honcho: connected · .+$/i.test(status)),
 			);
 
-			const handlers = connected.pi.handlers.get("before_agent_start") ?? [];
+			const handlers = connectedPi.handlers.get("before_agent_start") ?? [];
 			assert.equal(handlers.length, 2);
 			const prompt = await chainBeforeAgentStart(
 				handlers,
@@ -502,7 +523,7 @@ test("standing instructions inject offline and after a real connected Honcho sta
 			assert.match(prompt, /^base system prompt/);
 		} finally {
 			if (sessionShutdown) await sessionShutdown({}, ctx);
-			await connected.cleanup();
+			await rm(connectedRoot, { recursive: true, force: true });
 		}
 	} finally {
 		sessionManager.listAll = listAll;
@@ -512,12 +533,12 @@ test("standing instructions inject offline and after a real connected Honcho sta
 	}
 });
 
-test("package manifest lists both extension modules once", async () => {
+test("package manifest lists only the composition root", async () => {
 	const manifest: unknown = JSON.parse(
 		await readFile(new URL("../package.json", import.meta.url), "utf8"),
 	);
 	assert.ok(manifest && typeof manifest === "object" && "pi" in manifest);
 	const pi = (manifest as { pi?: { extensions?: unknown } }).pi;
 	assert.ok(pi && typeof pi === "object");
-	assert.deepEqual(pi.extensions, ["./src/index.ts", "./src/local-tools.ts"]);
+	assert.deepEqual(pi.extensions, ["./src/index.ts"]);
 });

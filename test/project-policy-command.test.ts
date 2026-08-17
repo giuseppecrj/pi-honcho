@@ -6,7 +6,7 @@ import {
 	type ProjectPolicyCommandContext,
 	type ProjectPolicyStore,
 	setupProjectPolicy,
-} from "../src/project-policy-command.js";
+} from "../src/remote/project-policy-command.js";
 
 function context(overrides: Partial<ProjectPolicyCommandContext> = {}) {
 	const confirmations: Array<{ title: string; details: string }> = [];

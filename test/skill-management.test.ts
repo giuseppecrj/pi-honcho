@@ -12,7 +12,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import localKnowledgeTools from "../src/local-tools.js";
+import localKnowledgeTools from "../src/local/index.js";
 
 type RegisteredTool = {
 	name: string;

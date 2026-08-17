@@ -5,7 +5,7 @@ import {
 	dispatchHonchoCommand,
 	formatHonchoCommandHelp,
 	parseHonchoCommand,
-} from "../src/command-namespace.js";
+} from "../src/remote/command-namespace.js";
 
 test("parses namespace commands and keeps action arguments", () => {
 	assert.deepEqual(parseHonchoCommand(""), { kind: "help" });

@@ -6,14 +6,14 @@ import test from "node:test";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { safeExchange } from "../src/exchange.js";
-import localKnowledgeTools from "../src/local-tools.js";
+import { safeExchange } from "../src/remote/exchange.js";
+import localKnowledgeTools from "../src/local/index.js";
 import {
 	defaultStandingPath,
 	registerStandingInstructions,
 	STANDING_MAX_CHARS,
 	STANDING_MAX_ENTRIES,
-} from "../src/standing-instructions.js";
+} from "../src/local/standing-instructions.js";
 
 type Notify = { message: string; type: string };
 type RegisteredCommand = {

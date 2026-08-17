@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"; // pi-lens-ignore: find-import-file-without-extension
 import test from "node:test";
 
-import { deletionTarget } from "../src/config.js";
+import { deletionTarget } from "../src/remote/config.js";
 
 test("accepts only explicit remote deletion targets", () => {
 	assert.deepEqual(deletionTarget("session"), { kind: "session" });

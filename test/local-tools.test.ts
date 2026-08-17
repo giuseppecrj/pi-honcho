@@ -17,7 +17,7 @@ import test from "node:test";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import localKnowledgeTools from "../src/local-tools.js";
+import localKnowledgeTools from "../src/local/index.js";
 
 type RegisteredTool = {
 	name: string;
@@ -174,26 +174,6 @@ test("session_search defaults its rebuildable index under pi-honcho", async () =
 		else process.env.PI_CODING_AGENT_SESSION_DIR = previousSessionDir;
 		await rm(root, { recursive: true, force: true });
 	}
-});
-
-test("package registers local tools separately from the Honcho extension", async () => {
-	const manifest: unknown = JSON.parse(
-		await readFile(new URL("../package.json", import.meta.url), "utf8"),
-	);
-	if (
-		!manifest ||
-		typeof manifest !== "object" ||
-		!("pi" in manifest) ||
-		!manifest.pi ||
-		typeof manifest.pi !== "object" ||
-		!("extensions" in manifest.pi) ||
-		!Array.isArray(manifest.pi.extensions)
-	)
-		throw new Error("package manifest is missing pi.extensions");
-	assert.deepEqual(manifest.pi.extensions, [
-		"./src/index.ts",
-		"./src/local-tools.ts",
-	]);
 });
 
 test("session_search registers the established public tool contract", () => {

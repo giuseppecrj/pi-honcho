@@ -4,8 +4,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { resolveHonchoConfig } from "../src/config.js";
-import { saveHonchoSettings } from "../src/config-file.js";
+import { resolveHonchoConfig } from "../src/remote/config.js";
+import { saveHonchoSettings } from "../src/remote/config-file.js";
 
 test("environment values override the isolated Honcho host block", () => {
 	const envBaseUrl = ["https:", "", "env.example"].join("/");

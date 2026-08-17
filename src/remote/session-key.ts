@@ -4,7 +4,10 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-export async function repositorySessionKey(cwd: string): Promise<string> {
+export async function repositorySessionKey(
+	cwd: string,
+	peerName: string,
+): Promise<string> {
 	let identity = cwd;
 	try {
 		const { stdout } = await execFileAsync(
@@ -18,5 +21,6 @@ export async function repositorySessionKey(cwd: string): Promise<string> {
 	} catch {
 		// A non-git directory is intentionally isolated by its absolute path.
 	}
-	return `repo-${createHash("sha256").update(identity).digest("hex").slice(0, 24)}`;
+	const input = `repo-v2:${peerName.length}:${peerName}:${identity.length}:${identity}`;
+	return `repo-v2-${createHash("sha256").update(input).digest("hex").slice(0, 24)}`;
 }

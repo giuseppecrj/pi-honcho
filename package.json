@@ -33,8 +33,7 @@
 	],
 	"pi": {
 		"extensions": [
-			"./src/index.ts",
-			"./src/local-tools.ts"
+			"./src/index.ts"
 		],
 		"image": "https://raw.githubusercontent.com/giuseppecrj/pi-honcho/v0.1.2/docs/assets/pi-honcho-gallery.png"
 	},

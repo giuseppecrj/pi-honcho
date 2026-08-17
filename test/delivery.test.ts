@@ -6,7 +6,7 @@ import {
 	type HonchoExchangeClient,
 	type HonchoRecoveryClient,
 	type RemoteAcknowledgement,
-} from "../src/delivery.js";
+} from "../src/remote/delivery.js";
 
 function exchange(operationId: string, assistantText = "Completed response") {
 	return { operationId, userText: "Submitted prompt", assistantText };

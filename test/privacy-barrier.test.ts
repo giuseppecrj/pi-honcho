@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"; // pi-lens-ignore: find-import-file-without-extension
 import test from "node:test";
 
-import { disableProjectMemoryNow } from "../src/privacy-barrier.js";
+import { disableProjectMemoryNow } from "../src/remote/privacy-barrier.js";
 
 test("an immediate project privacy disable clears recall, delivery, remote clients, connection, and tools", () => {
 	const effects: string[] = [];

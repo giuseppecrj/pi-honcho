@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"; // pi-lens-ignore: find-import-file-without-extension
 import test from "node:test";
 
-import { deliveryLedger } from "../src/delivery-ledger.js";
+import { deliveryLedger } from "../src/remote/delivery-ledger.js";
 
 const exchange = (operationId: string) => ({
 	operationId,

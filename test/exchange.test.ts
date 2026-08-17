@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"; // pi-lens-ignore: find-import-file-without-extension
 import test from "node:test";
 
-import { chunkText, safeExchange } from "../src/exchange.js";
+import { chunkText, safeExchange } from "../src/remote/exchange.js";
 
 test("rejects the complete exchange when either side contains a secret", () => {
 	assert.equal(

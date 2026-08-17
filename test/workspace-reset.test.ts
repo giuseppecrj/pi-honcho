@@ -5,7 +5,7 @@ import {
 	deletionOutcomeIsUncertain,
 	resetConfirmation,
 	resetRecovery,
-} from "../src/workspace-reset.js";
+} from "../src/remote/workspace-reset.js";
 
 test("requires an exact workspace-specific reset confirmation", () => {
 	assert.equal(resetConfirmation("pi-manual-test"), "DELETE pi-manual-test");

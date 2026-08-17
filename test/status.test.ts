@@ -1,7 +1,7 @@
 import assert from "node:assert/strict"; // pi-lens-ignore: find-import-file-without-extension
 import test from "node:test";
 
-import { HonchoStatusController } from "../src/status.js";
+import { HonchoStatusController } from "../src/remote/status.js";
 
 const config = {
 	apiKey: "test-key",

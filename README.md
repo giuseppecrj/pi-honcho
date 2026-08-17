@@ -9,7 +9,7 @@ Pi Honcho carries useful context across conversations and repositories without p
 ## Features
 
 - **Cross-project user memory** — remembers preferences and working style through one stable user peer.
-- **Repository memory** — keeps project context in a repository-scoped memory session shared by branches and worktrees.
+- **Repository memory** — keeps project context in a repository- and stable-user-peer-scoped memory session shared by that peer's branches and worktrees.
 - **Automatic recall** — adds bounded user and project context to top-level Pi turns as fenced reference material.
 - **Reliable delivery** — sends completed exchanges asynchronously, in order, with durable retry and stable operation IDs.
 - **Fork continuity** — clones remote history at Pi fork points while keeping later branches isolated.
@@ -76,7 +76,9 @@ Once connected, memory works automatically. Pi retrieves cached context when a s
 Pi Honcho uses two remote scopes:
 
 - **User peer** — preferences and working style shared across projects.
-- **Memory session** — conversation history and derived context for one repository.
+- **Memory session** — conversation history and derived context for one repository and stable user peer. Branches and worktrees for that peer share the repository session.
+
+New unmapped Pi conversations use a new opaque `repo-v2-` repository session. Pi histories with a stored remote-session mapping continue to use that mapping. Pi Honcho never automatically searches, merges, or deletes legacy sessions.
 
 At session start, the extension retrieves a cached user representation and project summary. It supplies that memory to the current model call as bounded, untrusted reference material. After a turn completes, it queues the submitted user prompt and completed text assistant response for ordered background delivery.
 
@@ -160,6 +162,27 @@ A dedicated host block keeps this extension's identity separate from other Honch
 
 Workspace IDs must contain only letters, digits, `_`, and `-`, for example `pi-user_1`. Pi rejects invalid IDs without changing them. If configuration is rejected, correct `HONCHO_WORKSPACE_ID` or `workspaceId` in Honcho config, then reload Pi.
 
+### Use one user representation with another Honcho host
+
+Use separate workspaces per integration by default; this is the safer isolation boundary. To intentionally join one user representation with another Honcho integration, configure both hosts with the same `workspaceId` and stable `peerName`:
+
+```json
+{
+  "hosts": {
+    "pi-honcho": {
+      "workspaceId": "shared-user-workspace",
+      "peerName": "your-stable-user-id"
+    },
+    "another-honcho-host": {
+      "workspaceId": "shared-user-workspace",
+      "peerName": "your-stable-user-id"
+    }
+  }
+}
+```
+
+This intentionally joins user-representation data; it does not create team memory or cross-host repository-session sharing. Pi repository sessions remain namespaced by stable peer in a shared workspace, and remote context is not automatically recalled on every turn.
+
 ### Environment variables
 
 | Variable | Purpose | Default |
@@ -238,12 +261,13 @@ Use `/honcho status` to inspect the current connection and policy state.
 
 ## Package structure
 
-The package registers two Pi extension modules:
+The package registers one Pi extension composition root:
 
 | Module | Responsibility |
 | --- | --- |
-| `src/index.ts` | Honcho lifecycle, delivery, recall, remote tools, and `/honcho` commands. |
-| `src/local-tools.ts` | Exact local recall, Pi-native skills, and standing instructions. |
+| `src/index.ts` | Package composition root that registers the remote module, then the local module. |
+| `src/remote/index.ts` | Honcho lifecycle, delivery, recall, remote tools, and `/honcho` commands. |
+| `src/local/index.ts` | Exact local recall, Pi-native skills, and standing instructions. |
 
 ## Development
 
