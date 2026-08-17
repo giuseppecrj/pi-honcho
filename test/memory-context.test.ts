@@ -1,7 +1,10 @@
 import assert from "node:assert/strict"; // pi-lens-ignore: find-import-file-without-extension
 import test from "node:test";
 
-import { contextBudget, formatMemoryContext } from "../src/remote/memory-context.js";
+import {
+	contextBudget,
+	formatMemoryContext,
+} from "../src/remote/memory-context.js";
 
 test("formats summary and Pi-specific user context as fenced reference", () => {
 	assert.equal(

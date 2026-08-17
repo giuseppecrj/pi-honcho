@@ -397,7 +397,9 @@ test("package root exposes local tools and resources while Honcho is disabled", 
 
 		const discovered = await resources({ cwd });
 		assert.ok(
-			discovered.skillPaths?.includes(join(root, "agent", "projects-memory", "repo", "skills")),
+			discovered.skillPaths?.includes(
+				join(root, "agent", "projects-memory", "repo", "skills"),
+			),
 		);
 		assert.equal(
 			await readFile(
@@ -493,9 +495,7 @@ test("package root adds standing instructions after the offline remote handler",
 		const sessionStart = connectedPi.handlers.get("session_start")?.[0] as
 			| ((event: { reason: "startup" }, ctx: ExtensionContext) => Promise<void>)
 			| undefined;
-		const sessionShutdown = connectedPi.handlers.get(
-			"session_shutdown",
-		)?.[0] as
+		const sessionShutdown = connectedPi.handlers.get("session_shutdown")?.[0] as
 			| ((event: unknown, ctx: ExtensionContext) => Promise<void>)
 			| undefined;
 		assert.ok(sessionStart);

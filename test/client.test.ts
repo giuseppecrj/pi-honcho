@@ -1,7 +1,10 @@
 import assert from "node:assert/strict"; // pi-lens-ignore: find-import-file-without-extension
 import test from "node:test";
 
-import { type HonchoSdkClient, SdkHonchoMemoryClient } from "../src/remote/client.js";
+import {
+	type HonchoSdkClient,
+	SdkHonchoMemoryClient,
+} from "../src/remote/client.js";
 import type { HonchoConnectionConfig } from "../src/remote/config.js";
 
 const config: HonchoConnectionConfig = {

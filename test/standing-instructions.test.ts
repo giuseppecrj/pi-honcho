@@ -5,8 +5,6 @@ import { join } from "node:path";
 import test from "node:test";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-
-import { safeExchange } from "../src/remote/exchange.js";
 import localKnowledgeTools from "../src/local/index.js";
 import {
 	defaultStandingPath,
@@ -14,6 +12,7 @@ import {
 	STANDING_MAX_CHARS,
 	STANDING_MAX_ENTRIES,
 } from "../src/local/standing-instructions.js";
+import { safeExchange } from "../src/remote/exchange.js";
 
 type Notify = { message: string; type: string };
 type RegisteredCommand = {
