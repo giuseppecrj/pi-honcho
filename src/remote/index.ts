@@ -10,7 +10,6 @@ import {
 	type HonchoForkClient,
 	type HonchoToolClient,
 	SdkHonchoMemoryClient,
-	type WorkspaceInspection,
 } from "./client.js";
 import {
 	commandArgumentCompletions,
@@ -18,7 +17,6 @@ import {
 	formatHonchoCommandHelp,
 } from "./command-namespace.js";
 import {
-	deletionTarget,
 	type HonchoConfiguration,
 	type HonchoConnectionConfig,
 	isValidHonchoWorkspaceId,
@@ -69,9 +67,7 @@ import {
 } from "./status.js";
 import { formatStatusDetails, type StatusDetails } from "./status-details.js";
 import {
-	deletionOutcomeIsUncertain,
 	isWorkspaceResetEntry,
-	resetConfirmation,
 	resetRecovery,
 	WORKSPACE_RESET_ENTRY_KEY,
 } from "./workspace-reset.js";
@@ -198,7 +194,7 @@ interface StartupConfiguration {
 	workspace: {
 		workspaceId: string;
 		workspaceSource: StatusDetails["workspaceSource"];
-		enabled: boolean;
+		repositoryMemory: NonNullable<StatusDetails["repositoryMemory"]>;
 	};
 	configuration: HonchoConfiguration;
 }
@@ -226,8 +222,8 @@ async function resolveStartupConfiguration(
 		return {
 			workspace: {
 				workspaceId: "",
-				workspaceSource: "default",
-				enabled: false,
+				workspaceSource: undefined,
+				repositoryMemory: "disabled",
 			},
 			configuration: {
 				kind: "disabled",
@@ -244,8 +240,8 @@ async function resolveStartupConfiguration(
 		return {
 			workspace: {
 				workspaceId: "",
-				workspaceSource: "default",
-				enabled: false,
+				workspaceSource: undefined,
+				repositoryMemory: "uninitialized",
 			},
 			configuration: {
 				kind: "unconfigured",
@@ -275,7 +271,7 @@ async function resolveStartupConfiguration(
 		workspace: {
 			workspaceId: entry.workspaceId,
 			workspaceSource: "registry",
-			enabled: entry.enabled,
+			repositoryMemory: entry.enabled ? "enabled" : "disabled",
 		},
 		configuration: entry.enabled
 			? configuration
@@ -305,7 +301,7 @@ function startupStatusDetails(startup: StartupConfiguration): StatusDetails {
 			? "environment"
 			: "Honcho config",
 		workspaceSource: startup.workspace.workspaceSource,
-		repositoryMemory: startup.workspace.enabled ? "enabled" : "disabled",
+		repositoryMemory: startup.workspace.repositoryMemory,
 	};
 }
 
@@ -679,6 +675,18 @@ export default function honchoMemory(
 			: undefined;
 	}
 
+	function clearDeletedSessionMemory(): void {
+		memoryGeneration += 1;
+		cachedMemory = undefined;
+		deliveryQueue?.discardPending();
+		deliveryQueue = undefined;
+		forkClient = undefined;
+		toolClient = undefined;
+		remoteSessionId = undefined;
+		statusDetails.sessionId = undefined;
+		refreshHonchoTools();
+	}
+
 	pi.registerTool({
 		name: "honcho_search",
 		label: "Honcho Search",
@@ -929,168 +937,35 @@ export default function honchoMemory(
 		handler: (_args, ctx) => setRepositoryEnabled(ctx, false),
 	});
 
-	async function forgetCommand(
-		args: string,
-		ctx: ExtensionContext,
-	): Promise<void> {
-		const target = deletionTarget(args);
+	async function sessionDeleteCommand(ctx: ExtensionContext): Promise<void> {
 		const available = availableToolClient();
-		if (!target || !available || !ctx.hasUI) {
-			if (ctx.hasUI) {
+		if (!available || !ctx.hasUI) {
+			if (ctx.hasUI)
 				ctx.ui.notify(
-					"Use /honcho-forget session or /honcho-forget conclusion <id> while connected.",
+					"Session deletion is available only while repository memory is connected.",
 					"warning",
 				);
-			}
 			return;
 		}
-		const identity = `Workspace: ${statusDetails.workspaceId}\nUser peer: ${statusDetails.userPeer}\nSession: ${available.sessionId}`;
-		const label =
-			target.kind === "session" ? "remote session" : `conclusion ${target.id}`;
 		if (
 			!(await ctx.ui.confirm(
-				"Delete remote memory?",
-				`${identity}\n\nDelete ${label}? This cannot be undone.`,
+				"Delete active repository session?",
+				`Workspace: ${statusDetails.workspaceId}\nRepository session: ${available.sessionId}\n\nThis cannot be undone.`,
 			))
 		)
 			return;
 		try {
-			if (target.kind === "session")
-				await available.client.deleteSession(available.sessionId);
-			else
-				await available.client.deleteConclusion(available.sessionId, target.id);
-			ctx.ui.notify(
-				`Deleted ${label}. Local Pi and Hermes memory were unchanged.`,
-				"info",
-			);
+			await available.client.deleteSession(available.sessionId);
+			clearDeletedSessionMemory();
+			ctx.ui.notify("Deleted the active repository session.", "info");
 		} catch {
-			ctx.ui.notify(
-				"Could not delete remote memory. It may not exist or Honcho may be rate-limited; local Pi and Hermes memory were unchanged.",
-				"error",
-			);
+			ctx.ui.notify("Could not delete the active repository session.", "error");
 		}
 	}
 
-	pi.registerCommand("honcho-forget", {
-		description: "Inspect and confirm deletion: session or conclusion <id>.",
-		handler: forgetCommand,
-	});
-
-	// pi-lens-ignore: high-complexity
-	function markResetUncertain(
-		ctx: ExtensionContext,
-		workspaceId: string,
-	): void {
-		try {
-			pi.appendEntry(WORKSPACE_RESET_ENTRY_KEY, {
-				kind: "uncertain",
-				workspaceId,
-			});
-		} catch {
-			// The in-memory block below remains the safe fallback.
-			resetBlocked = true;
-		}
-		resetBlocked = true;
-		setHonchoTools(false);
-		ctx.ui.notify(
-			"Reset outcome unknown; remote tools and writes are blocked until re-inspection resolves it.",
-			"error",
-		);
-	}
-
-	async function resetWorkspace(
-		args: string,
-		ctx: ExtensionContext,
-	): Promise<void> {
-		if (!ctx.hasUI || args.trim()) return;
-		const available = availableToolClient();
-		if (!available || awaitingRemoteRecreation) {
-			ctx.ui.notify(
-				"Honcho workspace reset is unavailable until remote memory is connected and resolved.",
-				"warning",
-			);
-			return;
-		}
-		let inspection: WorkspaceInspection;
-		ctx.ui.setStatus(
-			STATUS_KEY,
-			`Honcho: inspecting workspace… · ${statusDetails.workspaceId}`,
-		);
-		try {
-			inspection = await available.client.inspectWorkspace();
-			ctx.ui.setStatus(
-				STATUS_KEY,
-				`Honcho: connected · ${inspection.workspaceId}`,
-			);
-		} catch {
-			ctx.ui.notify(
-				"Workspace inspection was incomplete; no remote data was deleted.",
-				"error",
-			);
-			return;
-		}
-		const confirmation = resetConfirmation(inspection.workspaceId);
-		const details = `Workspace: ${inspection.workspaceId}\nPeers: ${inspection.peerIds.join(", ") || "none"}\nSessions: ${inspection.sessionCount}\nConclusions: ${inspection.conclusionCount}\n\nWARNING: shared-workspace data from other applications will also be deleted.`;
-		if (!(await ctx.ui.confirm("Delete inspected remote workspace?", details)))
-			return;
-		const typed = await ctx.ui.input(
-			`Type exactly: ${confirmation}`,
-			confirmation,
-		);
-		if (typed !== confirmation) return;
-		try {
-			pi.appendEntry(WORKSPACE_RESET_ENTRY_KEY, {
-				kind: "intent",
-				workspaceId: inspection.workspaceId,
-			});
-		} catch {
-			ctx.ui.notify(
-				"Could not record reset intent; no remote data was deleted.",
-				"error",
-			);
-			return;
-		}
-		try {
-			await available.client.deleteWorkspace(inspection.workspaceId);
-		} catch (error) {
-			if (!deletionOutcomeIsUncertain(error)) {
-				pi.appendEntry(WORKSPACE_RESET_ENTRY_KEY, {
-					kind: "failed",
-					workspaceId: inspection.workspaceId,
-				});
-				ctx.ui.notify(
-					`Workspace reset failed: ${error instanceof Error ? error.message : "remote deletion was rejected"}`,
-					"error",
-				);
-				return;
-			}
-			markResetUncertain(ctx, inspection.workspaceId);
-			return;
-		}
-		try {
-			pi.appendEntry(WORKSPACE_RESET_ENTRY_KEY, {
-				kind: "complete",
-				workspaceId: inspection.workspaceId,
-			});
-			resetBlocked = false;
-			awaitingRemoteRecreation = true;
-			deliveryQueue = undefined;
-			toolClient = undefined;
-			remoteSessionId = undefined;
-			setHonchoTools(false);
-			ctx.ui.notify(
-				"Workspace reset — remote memory will be recreated on next eligible exchange.",
-				"info",
-			);
-		} catch {
-			markResetUncertain(ctx, inspection.workspaceId);
-		}
-	}
-
-	pi.registerCommand("honcho-reset-workspace", {
-		description:
-			"Inspect and typed-confirm reset of the configured remote workspace.",
-		handler: resetWorkspace,
+	pi.registerCommand("honcho-session-delete", {
+		description: "Confirm deletion of the active repository session.",
+		handler: (_args, ctx) => sessionDeleteCommand(ctx),
 	});
 
 	async function statusCommand(
@@ -1128,8 +1003,7 @@ export default function honchoMemory(
 				setup: () => setupCommand(ctx),
 				enable: () => setRepositoryEnabled(ctx, true),
 				disable: () => setRepositoryEnabled(ctx, false),
-				forget: (forgetArgs) => forgetCommand(forgetArgs, ctx),
-				workspaceReset: () => resetWorkspace("", ctx),
+				sessionDelete: () => sessionDeleteCommand(ctx),
 				invalid: () => {
 					if (ctx.hasUI) {
 						ctx.ui.notify(

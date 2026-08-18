@@ -3,6 +3,17 @@ import test from "node:test";
 
 import { formatStatusDetails } from "../src/remote/status-details.js";
 
+test("guides an uninitialized repository to initialization", () => {
+	assert.equal(
+		formatStatusDetails({
+			state:
+				"unconfigured — This repository is not initialized. Use /honcho init.",
+			repositoryMemory: "uninitialized",
+		}),
+		"Honcho: unconfigured — This repository is not initialized. Use /honcho init.\nRepository memory: uninitialized\nRun /honcho init in a trusted repository to select a workspace.",
+	);
+});
+
 test("formats the effective repository boundary", () => {
 	assert.equal(
 		formatStatusDetails({
@@ -26,6 +37,6 @@ test("formats non-secret memory identity details", () => {
 			credentialSource: "Honcho config",
 			repositoryMemory: "enabled",
 		}),
-		"Honcho: connected\nWorkspace: pi\nUser peer: g\nPi peer: pi\nSession: repo-123\nCredentials: Honcho config\nRepository memory: enabled",
+		"Honcho: connected\nWorkspace: pi\nUser peer: g\nPi peer: pi\nRepository session: repo-123\nCredentials: Honcho config\nRepository memory: enabled",
 	);
 });

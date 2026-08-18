@@ -165,16 +165,6 @@ function preferredValue(
 	);
 }
 
-export type DeletionTarget =
-	| { kind: "session" }
-	| { kind: "conclusion"; id: string };
-
-export function deletionTarget(input: string): DeletionTarget | undefined {
-	if (input.trim() === "session") return { kind: "session" };
-	const match = input.trim().match(/^conclusion\s+(\S+)$/);
-	return match ? { kind: "conclusion", id: match[1] } : undefined;
-}
-
 export function resolveHonchoConfig(
 	env: Environment,
 	configFile: unknown,

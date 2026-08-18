@@ -15,21 +15,19 @@ test("parses namespace commands and keeps action arguments", () => {
 	assert.deepEqual(parseHonchoCommand("setup"), { kind: "setup" });
 	assert.deepEqual(parseHonchoCommand("enable"), { kind: "enable" });
 	assert.deepEqual(parseHonchoCommand("disable"), { kind: "disable" });
-	assert.deepEqual(parseHonchoCommand("forget conclusion conclusion-1"), {
-		kind: "forget",
-		args: "conclusion conclusion-1",
-	});
-	assert.deepEqual(parseHonchoCommand("workspace-reset"), {
-		kind: "workspace-reset",
+	assert.deepEqual(parseHonchoCommand("session delete"), {
+		kind: "session-delete",
 	});
 });
 
 test("rejects invalid namespace commands", () => {
 	assert.deepEqual(parseHonchoCommand("project"), { kind: "invalid" });
 	assert.deepEqual(parseHonchoCommand("status now"), { kind: "invalid" });
-	assert.deepEqual(parseHonchoCommand("workspace-reset now"), {
+	assert.deepEqual(parseHonchoCommand("session delete now"), {
 		kind: "invalid",
 	});
+	assert.deepEqual(parseHonchoCommand("forget session"), { kind: "invalid" });
+	assert.deepEqual(parseHonchoCommand("workspace-reset"), { kind: "invalid" });
 });
 
 test("dispatches root, help, actions, and invalid commands", async () => {
@@ -44,8 +42,7 @@ test("dispatches root, help, actions, and invalid commands", async () => {
 		setup: async () => record("setup"),
 		enable: async () => record("enable"),
 		disable: async () => record("disable"),
-		forget: async (args: string) => record(`forget ${args}`),
-		workspaceReset: async () => record("workspace reset"),
+		sessionDelete: async () => record("session delete"),
 		invalid: () => record("invalid"),
 	};
 
@@ -56,8 +53,7 @@ test("dispatches root, help, actions, and invalid commands", async () => {
 	await dispatchHonchoCommand("setup", operations);
 	await dispatchHonchoCommand("enable", operations);
 	await dispatchHonchoCommand("disable", operations);
-	await dispatchHonchoCommand("forget session", operations);
-	await dispatchHonchoCommand("workspace-reset", operations);
+	await dispatchHonchoCommand("session delete", operations);
 	await dispatchHonchoCommand("unknown", operations);
 
 	assert.deepEqual(calls, [
@@ -68,8 +64,7 @@ test("dispatches root, help, actions, and invalid commands", async () => {
 		"setup",
 		"enable",
 		"disable",
-		"forget session",
-		"workspace reset",
+		"session delete",
 		"invalid",
 	]);
 });
@@ -78,8 +73,8 @@ test("offers command argument completions", () => {
 	assert.deepEqual(commandArgumentCompletions("dis"), [
 		{ value: "disable", label: "disable" },
 	]);
-	assert.deepEqual(commandArgumentCompletions("for"), [
-		{ value: "forget", label: "forget" },
+	assert.deepEqual(commandArgumentCompletions("session d"), [
+		{ value: "session delete", label: "session delete" },
 	]);
 	assert.equal(commandArgumentCompletions("unknown"), null);
 });
@@ -87,10 +82,14 @@ test("offers command argument completions", () => {
 test("formats concise help with current status", () => {
 	assert.match(
 		formatHonchoCommandHelp("Honcho: connected\nWorkspace: pi"),
-		/\/honcho disable/,
+		/\/honcho session delete/,
 	);
 	assert.match(
 		formatHonchoCommandHelp("Honcho: connected\nWorkspace: pi"),
 		/Honcho: connected/,
+	);
+	assert.doesNotMatch(
+		formatHonchoCommandHelp("Honcho: connected\nWorkspace: pi"),
+		/(forget|workspace-reset|conclusion)/,
 	);
 });

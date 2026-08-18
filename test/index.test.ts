@@ -143,11 +143,13 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 		},
 	];
 	let recalledSessionId: string | undefined;
+	const deletedSessionIds: string[] = [];
+	const confirmations: Array<{ title: string; details: string }> = [];
 	const client = {
 		checkConnection: async () => undefined,
 		fetchCachedMemory: async (sessionId: string) => {
 			recalledSessionId = sessionId;
-			return {};
+			return { summary: "recalled session" };
 		},
 		deliverExchange: async () => [],
 		reconcileOperationId: async () => [],
@@ -156,7 +158,9 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 		chat: async () => undefined,
 		remember: async () => "conclusion-1",
 		listWorkspaces: async () => ["pi"],
-		deleteSession: async () => undefined,
+		deleteSession: async (sessionId: string) => {
+			deletedSessionIds.push(sessionId);
+		},
 		deleteConclusion: async () => undefined,
 		inspectWorkspace: async () => ({
 			workspaceId: "pi",
@@ -178,6 +182,15 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 			getEntries: () => branch,
 			getBranch: () => branch,
 		},
+		getContextUsage: () => undefined,
+		ui: {
+			setStatus: () => undefined,
+			confirm: async (title: string, details: string) => {
+				confirmations.push({ title, details });
+				return true;
+			},
+			notify: () => undefined,
+		},
 	} as unknown as ExtensionContext;
 	const pi = new FakePiRuntime();
 	honchoMemory(pi as unknown as ExtensionAPI, () => client);
@@ -194,6 +207,21 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 		await waitFor(() => recalledSessionId !== undefined);
 		assert.equal(recalledSessionId, "legacy-remote-session");
 		assert.ok(!recalledSessionId.startsWith("repo-v2-"));
+		const contextHandler = pi.handlers.get("context") as (
+			event: { messages: unknown[] },
+			ctx: ExtensionContext,
+		) => { messages: unknown[] } | undefined;
+		assert.equal(contextHandler({ messages: [] }, context)?.messages.length, 1);
+		const sessionDelete = pi.commands.get("honcho-session-delete")?.handler;
+		assert.ok(sessionDelete);
+		await sessionDelete("", context);
+		assert.deepEqual(deletedSessionIds, ["legacy-remote-session"]);
+		assert.match(confirmations[0]?.title ?? "", /active repository session/i);
+		assert.match(
+			confirmations[0]?.details ?? "",
+			/Repository session: legacy-remote-session/,
+		);
+		assert.equal(contextHandler({ messages: [] }, context), undefined);
 	} finally {
 		await sessionShutdown({}, context);
 		sessionManager.listAll = listAll;
@@ -252,9 +280,24 @@ test("legacy workspace configuration cannot activate an uninitialized repository
 			ctx: ExtensionContext,
 		) => Promise<void>;
 		const statuses: string[] = [];
-		await handler({ reason: "startup" }, { ...startupContext(statuses), cwd });
+		const notifications: string[] = [];
+		const context = {
+			...startupContext(statuses),
+			cwd,
+			ui: {
+				setStatus: (_key: string, value: string) => statuses.push(value),
+				notify: (message: string) => notifications.push(message),
+			},
+		} as unknown as ExtensionContext;
+		await handler({ reason: "startup" }, context);
 		assert.equal(factoryCalls, 0);
 		assert.match(statuses.at(-1) ?? "", /not initialized/i);
+		const status = pi.commands.get("honcho-status")?.handler;
+		assert.ok(status);
+		await status("", context);
+		assert.match(notifications[0] ?? "", /Repository memory: uninitialized/);
+		assert.match(notifications[0] ?? "", /Run \/honcho init/);
+		assert.doesNotMatch(notifications[0] ?? "", /Workspace source/);
 	} finally {
 		restoreEnvironment("HONCHO_API_KEY", previous.HONCHO_API_KEY);
 		restoreEnvironment("HONCHO_WORKSPACE_ID", previous.HONCHO_WORKSPACE_ID);

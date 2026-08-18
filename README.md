@@ -102,12 +102,10 @@ The ledger records are local Pi session entries. Recalled context stays in the r
 | `/honcho setup` | Change the stable user and Pi identities. |
 | `/honcho enable` | Enable memory for an initialized trusted repository. |
 | `/honcho disable` | Immediately stop recall, delivery, clients, and tools for an initialized trusted repository. |
-| `/honcho forget session` | Confirm deletion of the active remote memory session. |
-| `/honcho forget conclusion <id>` | Confirm deletion of one remote conclusion. |
-| `/honcho workspace-reset` | Inspect, typed-confirm, and delete the configured remote workspace. |
+| `/honcho session delete` | Confirm deletion of the active repository session. |
 | `/memory-pin` | List, add, remove, or clear standing instructions. |
 
-Direct command aliases are also available: `/honcho-status`, `/honcho-init`, `/honcho-setup`, `/honcho-enable`, `/honcho-disable`, `/honcho-forget`, and `/honcho-reset-workspace`.
+Direct command aliases are also available: `/honcho-status`, `/honcho-init`, `/honcho-setup`, `/honcho-enable`, `/honcho-disable`, and `/honcho-session-delete`.
 
 Standing-instruction examples:
 

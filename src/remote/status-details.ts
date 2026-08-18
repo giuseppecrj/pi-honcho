@@ -6,7 +6,7 @@ export interface StatusDetails {
 	sessionId?: string;
 	credentialSource?: "environment" | "Honcho config";
 	workspaceSource?: "registry" | "default";
-	repositoryMemory?: "enabled" | "disabled";
+	repositoryMemory?: "uninitialized" | "enabled" | "disabled";
 }
 
 export function formatStatusDetails(details: StatusDetails): string {
@@ -18,12 +18,15 @@ export function formatStatusDetails(details: StatusDetails): string {
 			: undefined,
 		details.userPeer ? `User peer: ${details.userPeer}` : undefined,
 		details.aiPeer ? `Pi peer: ${details.aiPeer}` : undefined,
-		details.sessionId ? `Session: ${details.sessionId}` : undefined,
+		details.sessionId ? `Repository session: ${details.sessionId}` : undefined,
 		details.credentialSource
 			? `Credentials: ${details.credentialSource}`
 			: undefined,
 		details.repositoryMemory
 			? `Repository memory: ${details.repositoryMemory}`
+			: undefined,
+		details.repositoryMemory === "uninitialized"
+			? "Run /honcho init in a trusted repository to select a workspace."
 			: undefined,
 	]
 		.filter((line): line is string => line !== undefined)

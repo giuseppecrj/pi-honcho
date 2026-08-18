@@ -5,8 +5,7 @@ export type HonchoCommand =
 	| { kind: "setup" }
 	| { kind: "enable" }
 	| { kind: "disable" }
-	| { kind: "forget"; args: string }
-	| { kind: "workspace-reset" }
+	| { kind: "session-delete" }
 	| { kind: "invalid" };
 
 export interface HonchoCommandOperations {
@@ -16,8 +15,7 @@ export interface HonchoCommandOperations {
 	setup(): Promise<void>;
 	enable(): Promise<void>;
 	disable(): Promise<void>;
-	forget(args: string): Promise<void>;
-	workspaceReset(): Promise<void>;
+	sessionDelete(): Promise<void>;
 	invalid(): void;
 }
 
@@ -27,8 +25,7 @@ const commandNames = [
 	"setup",
 	"enable",
 	"disable",
-	"forget",
-	"workspace-reset",
+	"session delete",
 ] as const;
 
 export function parseHonchoCommand(args: string): HonchoCommand {
@@ -39,10 +36,7 @@ export function parseHonchoCommand(args: string): HonchoCommand {
 	if (input === "setup") return { kind: "setup" };
 	if (input === "enable") return { kind: "enable" };
 	if (input === "disable") return { kind: "disable" };
-	if (input === "workspace-reset") return { kind: "workspace-reset" };
-	if (input.startsWith("forget ")) {
-		return { kind: "forget", args: input.slice("forget ".length) };
-	}
+	if (input === "session delete") return { kind: "session-delete" };
 	return { kind: "invalid" };
 }
 
@@ -64,10 +58,8 @@ export async function dispatchHonchoCommand(
 			return operations.enable();
 		case "disable":
 			return operations.disable();
-		case "forget":
-			return operations.forget(command.args);
-		case "workspace-reset":
-			return operations.workspaceReset();
+		case "session-delete":
+			return operations.sessionDelete();
 		case "invalid":
 			operations.invalid();
 			return;
@@ -92,8 +84,7 @@ export function formatHonchoCommandHelp(status: string): string {
 		"/honcho setup — change stable user and Pi identities",
 		"/honcho enable — enable initialized repository memory",
 		"/honcho disable — immediately stop this repository's memory",
-		"/honcho forget session|conclusion <id> — delete remote memory",
-		"/honcho workspace-reset — reset the configured remote workspace",
+		"/honcho session delete — delete the active repository session",
 		"",
 		status,
 	].join("\n");
