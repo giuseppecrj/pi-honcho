@@ -1,10 +1,18 @@
 import { execFile } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"; // pi-lens-ignore: find-import-file-without-extension
+import {
+	chmod,
+	mkdir,
+	readFile,
+	rename,
+	rm,
+	writeFile,
+} from "node:fs/promises"; // pi-lens-ignore: find-import-file-without-extension
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import { HONCHO_HOST_NAME, isValidHonchoWorkspaceId } from "./config.js";
+import type { OAuthTokens } from "./oauth.js";
 import {
 	discoverProjectHonchoPolicy,
 	isValidProjectHonchoPolicy,
@@ -137,12 +145,12 @@ async function writeJsonAtomically(
 	const temporaryPath = join(directory, `.${process.pid}.${randomUUID()}.tmp`);
 	try {
 		await mkdir(directory, { recursive: true });
-		await writeFile(
-			temporaryPath,
-			`${JSON.stringify(value, null, 2)}\n`,
-			"utf8",
-		);
+		await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, {
+			encoding: "utf8",
+			mode: 0o600,
+		});
 		await rename(temporaryPath, path);
+		await chmod(path, 0o600).catch(() => undefined);
 		return true;
 	} catch {
 		await rm(temporaryPath, { force: true }).catch(() => undefined);
@@ -157,6 +165,28 @@ export async function saveProjectHonchoPolicy(
 	if (!isValidProjectHonchoPolicy(policy)) return undefined;
 	const path = join(cwd, ".pi", "honcho-memory.json");
 	return (await writeJsonAtomically(path, policy)) ? path : undefined;
+}
+
+export async function saveHonchoOAuthTokens(
+	oauth: OAuthTokens,
+): Promise<boolean> {
+	try {
+		const existing = await loadHonchoConfigFile();
+		const config = existing && typeof existing === "object" ? existing : {};
+		return writeJsonAtomically(configPath(), {
+			...config,
+			oauth: {
+				accessToken: oauth.accessToken,
+				refreshToken: oauth.refreshToken,
+				accessExpiresAt: oauth.accessExpiresAt,
+				clientId: oauth.clientId,
+				scope: oauth.scope,
+				host: oauth.host,
+			},
+		});
+	} catch {
+		return false;
+	}
 }
 
 export async function saveHonchoSettings(settings: {

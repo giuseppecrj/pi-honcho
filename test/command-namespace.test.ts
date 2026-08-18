@@ -12,6 +12,7 @@ test("parses namespace commands and keeps action arguments", () => {
 	assert.deepEqual(parseHonchoCommand("help"), { kind: "help" });
 	assert.deepEqual(parseHonchoCommand("status"), { kind: "status" });
 	assert.deepEqual(parseHonchoCommand("init"), { kind: "init" });
+	assert.deepEqual(parseHonchoCommand("login"), { kind: "login" });
 	assert.deepEqual(parseHonchoCommand("setup"), { kind: "setup" });
 	assert.deepEqual(parseHonchoCommand("enable"), { kind: "enable" });
 	assert.deepEqual(parseHonchoCommand("disable"), { kind: "disable" });
@@ -39,6 +40,7 @@ test("dispatches root, help, actions, and invalid commands", async () => {
 		help: async () => record("help"),
 		status: async () => record("status"),
 		init: async () => record("init"),
+		login: async () => record("login"),
 		setup: async () => record("setup"),
 		enable: async () => record("enable"),
 		disable: async () => record("disable"),
@@ -50,6 +52,7 @@ test("dispatches root, help, actions, and invalid commands", async () => {
 	await dispatchHonchoCommand("help", operations);
 	await dispatchHonchoCommand("status", operations);
 	await dispatchHonchoCommand("init", operations);
+	await dispatchHonchoCommand("login", operations);
 	await dispatchHonchoCommand("setup", operations);
 	await dispatchHonchoCommand("enable", operations);
 	await dispatchHonchoCommand("disable", operations);
@@ -61,6 +64,7 @@ test("dispatches root, help, actions, and invalid commands", async () => {
 		"help",
 		"status",
 		"init",
+		"login",
 		"setup",
 		"enable",
 		"disable",

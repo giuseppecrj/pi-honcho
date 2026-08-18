@@ -133,6 +133,50 @@ test("uses the Honcho CLI's top-level credentials when no override is set", () =
 	assert.equal(result.config.baseUrl, environmentUrl);
 });
 
+test("uses a valid host-bound OAuth access token before a saved API key", () => {
+	const result = resolveHonchoConfig(
+		{},
+		{
+			apiKey: "saved-api-key",
+			environmentUrl: "https://api.honcho.dev",
+			oauth: {
+				accessToken: "oauth-access-token",
+				refreshToken: "oauth-refresh-token",
+				accessExpiresAt: Date.now() + 3_600_000,
+				clientId: "honcho-cli",
+				scope: "write",
+				host: "https://api.honcho.dev",
+			},
+		},
+	);
+
+	assert.equal(result.kind, "configured");
+	if (result.kind !== "configured") return;
+	assert.equal(result.config.apiKey, "oauth-access-token");
+});
+
+test("does not use expired OAuth credentials", () => {
+	const result = resolveHonchoConfig(
+		{},
+		{
+			environmentUrl: "https://api.honcho.dev",
+			oauth: {
+				accessToken: "oauth-access-token",
+				refreshToken: "oauth-refresh-token",
+				accessExpiresAt: 0,
+				clientId: "honcho-cli",
+				scope: "write",
+				host: "https://api.honcho.dev",
+			},
+		},
+	);
+
+	assert.deepEqual(result, {
+		kind: "unconfigured",
+		reason: "Honcho OAuth session expired. Run /honcho login.",
+	});
+});
+
 test("workspace IDs accept only SDK-compatible characters", () => {
 	for (const workspaceId of ["a", "Z", "0", "_", "-", "Az09_-"])
 		assert.equal(
@@ -247,7 +291,8 @@ test("missing credentials are unconfigured without exposing configuration values
 
 	assert.deepEqual(result, {
 		kind: "unconfigured",
-		reason: "No Honcho API key is configured",
+		reason:
+			"No Honcho API key is configured. Run /honcho login or set HONCHO_API_KEY.",
 	});
 });
 

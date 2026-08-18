@@ -2,6 +2,7 @@ export type HonchoCommand =
 	| { kind: "help" }
 	| { kind: "status" }
 	| { kind: "init" }
+	| { kind: "login" }
 	| { kind: "setup" }
 	| { kind: "enable" }
 	| { kind: "disable" }
@@ -12,6 +13,7 @@ export interface HonchoCommandOperations {
 	help(): Promise<void>;
 	status(): Promise<void>;
 	init(): Promise<void>;
+	login(): Promise<void>;
 	setup(): Promise<void>;
 	enable(): Promise<void>;
 	disable(): Promise<void>;
@@ -22,6 +24,7 @@ export interface HonchoCommandOperations {
 const commandNames = [
 	"status",
 	"init",
+	"login",
 	"setup",
 	"enable",
 	"disable",
@@ -33,6 +36,7 @@ export function parseHonchoCommand(args: string): HonchoCommand {
 	if (!input || input === "help") return { kind: "help" };
 	if (input === "status") return { kind: "status" };
 	if (input === "init") return { kind: "init" };
+	if (input === "login") return { kind: "login" };
 	if (input === "setup") return { kind: "setup" };
 	if (input === "enable") return { kind: "enable" };
 	if (input === "disable") return { kind: "disable" };
@@ -52,6 +56,8 @@ export async function dispatchHonchoCommand(
 			return operations.status();
 		case "init":
 			return operations.init();
+		case "login":
+			return operations.login();
 		case "setup":
 			return operations.setup();
 		case "enable":
@@ -81,6 +87,7 @@ export function formatHonchoCommandHelp(status: string): string {
 		"Honcho commands:",
 		"/honcho status — show connection and repository status",
 		"/honcho init — select or create this repository's workspace",
+		"/honcho login — sign in to Honcho with your browser",
 		"/honcho setup — change stable user and Pi identities",
 		"/honcho enable — enable initialized repository memory",
 		"/honcho disable — immediately stop this repository's memory",

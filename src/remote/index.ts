@@ -20,12 +20,14 @@ import {
 	type HonchoConfiguration,
 	type HonchoConnectionConfig,
 	isValidHonchoWorkspaceId,
+	resolveHonchoBaseUrl,
 	resolveHonchoConfig,
 } from "./config.js";
 import {
 	loadHonchoConfigFile,
 	loadHonchoRegistry,
 	repositoryOrigin,
+	saveHonchoOAuthTokens,
 	saveHonchoRegistry,
 } from "./config-file.js";
 import {
@@ -53,6 +55,13 @@ import {
 	contextBudget,
 	formatMemoryContext,
 } from "./memory-context.js";
+import {
+	beginDeviceAuthorization,
+	oauthTokensForHost,
+	pollDeviceAuthorization,
+	refreshOAuthTokens,
+	validOAuthAccessToken,
+} from "./oauth.js";
 import { disableProjectMemoryNow } from "./privacy-barrier.js";
 import {
 	canonicalRepositoryKey,
@@ -160,6 +169,10 @@ function describeStatus(status: HonchoMemoryStatus): string {
 	}
 }
 
+function terminalHyperlink(url: string): string {
+	return `\x1b]8;;${url}\x07${url}\x1b]8;;\x07`;
+}
+
 function showStatus(
 	ctx: ExtensionContext,
 	status: HonchoMemoryStatus,
@@ -213,11 +226,12 @@ interface StartupSession {
 async function resolveStartupConfiguration(
 	ctx: ExtensionContext,
 ): Promise<StartupConfiguration> {
-	const [registry, configFile, origin] = await Promise.all([
+	const [registry, loadedConfigFile, origin] = await Promise.all([
 		loadHonchoRegistry(),
 		loadHonchoConfigFile(),
 		repositoryOrigin(ctx.cwd),
 	]);
+	let configFile = loadedConfigFile;
 	if (!registry) {
 		return {
 			workspace: {
@@ -248,6 +262,13 @@ async function resolveStartupConfiguration(
 				reason: "This repository is not initialized. Use /honcho init.",
 			},
 		};
+	}
+	const baseUrl = resolveHonchoBaseUrl(process.env, configFile);
+	const oauth = oauthTokensForHost(configFile, baseUrl);
+	if (oauth && !validOAuthAccessToken(configFile, baseUrl)) {
+		const refreshed = await refreshOAuthTokens(oauth);
+		if (refreshed && (await saveHonchoOAuthTokens(refreshed)))
+			configFile = await loadHonchoConfigFile();
 	}
 	const configured = resolveHonchoConfig(
 		process.env,
@@ -842,6 +863,48 @@ export default function honchoMemory(
 		);
 	}
 
+	async function loginCommand(ctx: ExtensionContext): Promise<void> {
+		if (!ctx.hasUI) return;
+		const configFile = await loadHonchoConfigFile();
+		const baseUrl = resolveHonchoBaseUrl(process.env, configFile);
+		const authorization = await beginDeviceAuthorization(baseUrl);
+		if (authorization.kind === "unsupported") {
+			ctx.ui.notify(
+				"Browser sign-in is unavailable for this Honcho host. Set HONCHO_API_KEY instead.",
+				"warning",
+			);
+			return;
+		}
+		if (authorization.kind === "failed") {
+			ctx.ui.notify("Could not start Honcho browser sign-in.", "error");
+			return;
+		}
+		ctx.ui.notify(
+			`Open ${terminalHyperlink(authorization.device.verificationUri)} and enter code ${authorization.device.userCode}. Waiting for approval…`,
+			"info",
+		);
+		const result = await pollDeviceAuthorization(baseUrl, authorization.device);
+		if (result.kind !== "success") {
+			const message =
+				result.kind === "denied"
+					? "Honcho browser sign-in was denied."
+					: result.kind === "expired"
+						? "Honcho browser sign-in expired. Run /honcho login again."
+						: "Honcho browser sign-in failed.";
+			ctx.ui.notify(message, "warning");
+			return;
+		}
+		if (!(await saveHonchoOAuthTokens(result.tokens))) {
+			ctx.ui.notify("Could not save Honcho sign-in.", "error");
+			return;
+		}
+		await initialize(ctx);
+		ctx.ui.notify(
+			"Signed in to Honcho. Run /honcho init to initialize this repository.",
+			"info",
+		);
+	}
+
 	async function setupCommand(ctx: ExtensionContext): Promise<void> {
 		if (!ctx.hasUI) return;
 		const registry = await loadHonchoRegistry();
@@ -924,6 +987,10 @@ export default function honchoMemory(
 		description: "Initialize trusted repository memory.",
 		handler: (_args, ctx) => initCommand(ctx),
 	});
+	pi.registerCommand("honcho-login", {
+		description: "Sign in to Honcho with your browser.",
+		handler: (_args, ctx) => loginCommand(ctx),
+	});
 	pi.registerCommand("honcho-setup", {
 		description: "Change stable Honcho identities.",
 		handler: (_args, ctx) => setupCommand(ctx),
@@ -1000,6 +1067,7 @@ export default function honchoMemory(
 				},
 				status: () => statusCommand("", ctx),
 				init: () => initCommand(ctx),
+				login: () => loginCommand(ctx),
 				setup: () => setupCommand(ctx),
 				enable: () => setRepositoryEnabled(ctx, true),
 				disable: () => setRepositoryEnabled(ctx, false),

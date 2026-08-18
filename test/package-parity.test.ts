@@ -90,6 +90,7 @@ const EXPECTED_COMMANDS = [
 	"honcho-disable",
 	"honcho-enable",
 	"honcho-init",
+	"honcho-login",
 	"honcho-session-delete",
 	"honcho-setup",
 	"honcho-status",

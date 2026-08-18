@@ -1,8 +1,11 @@
+import { oauthTokensForHost, validOAuthAccessToken } from "./oauth.js";
+
 export const DEFAULT_TIMEOUT_MS = 3_000;
 export const DEFAULT_WORKSPACE_ID = "pi";
 export const DEFAULT_PEER_NAME = "user";
 export const DEFAULT_AI_PEER = "pi";
 export const DEFAULT_MAX_MESSAGE_LENGTH = 8_000;
+export const DEFAULT_HONCHO_BASE_URL = "https://api.honcho.dev";
 
 export interface HonchoConnectionConfig {
 	apiKey: string;
@@ -165,6 +168,20 @@ function preferredValue(
 	);
 }
 
+export function resolveHonchoBaseUrl(
+	env: Environment,
+	configFile: unknown,
+): string {
+	const host = hostSettings(configFile);
+	const cli = settings(configFile);
+	return preferredValue(
+		env.HONCHO_BASE_URL,
+		host?.environmentUrl,
+		cli?.environmentUrl,
+		DEFAULT_HONCHO_BASE_URL,
+	);
+}
+
 export function resolveHonchoConfig(
 	env: Environment,
 	configFile: unknown,
@@ -176,9 +193,24 @@ export function resolveHonchoConfig(
 
 	const host = hostSettings(configFile);
 	const cli = settings(configFile);
-	const apiKey = preferredValue(env.HONCHO_API_KEY, host?.apiKey, cli?.apiKey);
+	const baseUrl = resolveHonchoBaseUrl(env, configFile);
+	const configuredApiKey = preferredValue(
+		env.HONCHO_API_KEY,
+		host?.apiKey,
+		cli?.apiKey,
+	);
+	const oauth = oauthTokensForHost(configFile, baseUrl);
+	const apiKey =
+		nonEmptyString(env.HONCHO_API_KEY) ??
+		validOAuthAccessToken(configFile, baseUrl) ??
+		configuredApiKey;
 	if (!apiKey) {
-		return { kind: "unconfigured", reason: "No Honcho API key is configured" };
+		return {
+			kind: "unconfigured",
+			reason: oauth
+				? "Honcho OAuth session expired. Run /honcho login."
+				: "No Honcho API key is configured. Run /honcho login or set HONCHO_API_KEY.",
+		};
 	}
 
 	const workspace = resolvedWorkspace(env, host, cli, projectWorkspaceId);
@@ -193,11 +225,7 @@ export function resolveHonchoConfig(
 		kind: "configured",
 		config: {
 			apiKey,
-			baseUrl: preferredValue(
-				env.HONCHO_BASE_URL,
-				host?.environmentUrl,
-				cli?.environmentUrl,
-			),
+			baseUrl,
 			...workspace,
 			peerName: preferredValue(
 				env.HONCHO_PEER_NAME,

@@ -21,7 +21,7 @@ Pi Honcho carries useful context across conversations and repositories without p
 ## Requirements
 
 - Pi with package support
-- A Honcho API key for remote memory
+- A Honcho API key or browser sign-in for remote memory
 
 Local session search, skills, and standing instructions work without Honcho credentials.
 
@@ -55,16 +55,21 @@ Restart Pi after installation. Pi packages execute with your user account's perm
 
 ## Quick start
 
-Set your Honcho API key outside Pi's chat and session files:
+Set your Honcho API key outside Pi's chat and session files, or sign in from Pi:
 
 ```bash
 export HONCHO_API_KEY="your-api-key"
 pi
 ```
 
+```text
+/honcho login
+```
+
 Configure a stable workspace and user peer, then check the connection:
 
 ```text
+/honcho init
 /honcho setup
 /honcho status
 ```
@@ -99,13 +104,14 @@ The ledger records are local Pi session entries. Recalled context stays in the r
 | `/honcho` or `/honcho help` | Show command help and current status. |
 | `/honcho status` | Show connection, repository-memory, workspace, peer, and repository-session status. |
 | `/honcho init` | Select or create a workspace and initialize the current trusted repository. |
+| `/honcho login` | Sign in to Honcho in your browser. |
 | `/honcho setup` | Change the stable user and Pi identities. |
 | `/honcho enable` | Enable memory for an initialized trusted repository. |
 | `/honcho disable` | Immediately stop recall, delivery, clients, and tools for an initialized trusted repository. |
 | `/honcho session delete` | Confirm deletion of the active repository session. |
 | `/memory-pin` | List, add, remove, or clear standing instructions. |
 
-Direct command aliases are also available: `/honcho-status`, `/honcho-init`, `/honcho-setup`, `/honcho-enable`, `/honcho-disable`, and `/honcho-session-delete`.
+Direct command aliases are also available: `/honcho-status`, `/honcho-init`, `/honcho-login`, `/honcho-setup`, `/honcho-enable`, `/honcho-disable`, and `/honcho-session-delete`.
 
 Standing-instruction examples:
 
@@ -141,7 +147,7 @@ These tools do not require Honcho and remain available offline.
 
 ## Configuration
 
-You can configure Honcho with environment variables or `~/.honcho/config.json`.
+You can configure Honcho with an API key or `/honcho login`. Browser sign-in requires a Honcho host that supports device authorization. Manual API-key configuration uses environment variables or `~/.honcho/config.json`.
 
 Credentials stay in `~/.honcho/config.json` or environment variables. Pi stores its stable identity and repository mappings in `honcho-memory.json` under `PI_CODING_AGENT_DIR` (default `~/.pi/agent`), separate from credentials.
 
@@ -161,7 +167,7 @@ Workspace IDs must contain only letters, digits, `_`, and `-`, for example `pi-u
 | `HONCHO_MAX_MESSAGE_LENGTH` | Maximum safe message chunk size. | `8000` |
 | `PI_CODING_AGENT_DIR` | Pi agent data directory used by local knowledge tools. | `~/.pi/agent` |
 
-Restart or reload Pi after changing credentials or environment configuration. Use `/honcho init`, `/honcho enable`, and `/honcho disable` to change the repository lifecycle.
+Restart or reload Pi after changing API-key credentials or environment configuration. Use `/honcho login` for browser sign-in, and `/honcho init`, `/honcho enable`, and `/honcho disable` to change the repository lifecycle.
 
 ## Privacy and data lifecycle
 
