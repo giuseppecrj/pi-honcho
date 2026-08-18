@@ -12,7 +12,16 @@ import {
 
 import piHoncho from "../src/index.js";
 import localKnowledgeTools from "../src/local/index.js";
+import {
+	repositoryOrigin,
+	saveHonchoRegistry,
+} from "../src/remote/config-file.js";
 import honchoMemory from "../src/remote/index.js";
+import {
+	canonicalRepositoryKey,
+	initialRegistry,
+	updateRepositoryEntry,
+} from "../src/remote/registry.js";
 
 type ToolResult = {
 	content: Array<{ type?: string; text: string }>;
@@ -78,8 +87,10 @@ const EXPECTED_TOOLS = [
 ].sort();
 const EXPECTED_COMMANDS = [
 	"honcho",
+	"honcho-disable",
+	"honcho-enable",
 	"honcho-forget",
-	"honcho-project-policy",
+	"honcho-init",
 	"honcho-reset-workspace",
 	"honcho-setup",
 	"honcho-status",
@@ -126,6 +137,7 @@ function connectedClient() {
 		search: async () => [],
 		chat: async () => undefined,
 		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
 		deleteSession: async () => undefined,
 		deleteConclusion: async () => undefined,
 		inspectWorkspace: async () => ({
@@ -491,6 +503,16 @@ test("package root adds standing instructions after the offline remote handler",
 			standingEnabled: true,
 			cwd: connectedCwd,
 		});
+		await saveHonchoRegistry(
+			updateRepositoryEntry(
+				initialRegistry(),
+				canonicalRepositoryKey(
+					connectedCwd,
+					await repositoryOrigin(connectedCwd),
+				),
+				{ workspaceId: "pi", enabled: true },
+			),
+		);
 		const ctx = startupContext(connectedCwd, statuses);
 		const sessionStart = connectedPi.handlers.get("session_start")?.[0] as
 			| ((event: { reason: "startup" }, ctx: ExtensionContext) => Promise<void>)

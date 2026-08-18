@@ -11,6 +11,7 @@ export interface HonchoConnectionConfig {
 	workspaceSource:
 		| "environment"
 		| "project policy"
+		| "registry"
 		| "Honcho config"
 		| "default";
 	peerName: string;
@@ -129,6 +130,8 @@ function invalidWorkspaceReason(
 			return "Invalid workspace ID from environment. Set HONCHO_WORKSPACE_ID to use only letters, digits, underscores, or hyphens.";
 		case "project policy":
 			return "Invalid workspace ID from project policy. Correct the trusted project policy workspace to use only letters, digits, underscores, or hyphens.";
+		case "registry":
+			return "Invalid workspace ID from the local registry.";
 		case "Honcho config":
 			return "Invalid workspace ID from Honcho config. Set workspaceId to use only letters, digits, underscores, or hyphens.";
 		case "default":

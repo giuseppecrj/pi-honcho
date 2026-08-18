@@ -3,17 +3,15 @@ import test from "node:test";
 
 import { formatStatusDetails } from "../src/remote/status-details.js";
 
-test("formats the effective workspace boundary and policy failure", () => {
+test("formats the effective repository boundary", () => {
 	assert.equal(
 		formatStatusDetails({
-			state: "disabled — Project policy must be a JSON object",
+			state: "disabled — Disabled for this repository",
 			workspaceId: "retained",
-			workspaceSource: "project policy",
-			projectPolicy: "disabled",
-			projectPolicyPath: "/repo/.pi/honcho-memory.json",
-			projectPolicyReason: "Project policy must be a JSON object",
+			workspaceSource: "registry",
+			repositoryMemory: "disabled",
 		}),
-		"Honcho: disabled — Project policy must be a JSON object\nWorkspace: retained\nWorkspace source: project policy\nProject policy: disabled\nPolicy path: /repo/.pi/honcho-memory.json\nPolicy reason: Project policy must be a JSON object",
+		"Honcho: disabled — Disabled for this repository\nWorkspace: retained\nWorkspace source: registry\nRepository memory: disabled",
 	);
 });
 
@@ -26,8 +24,8 @@ test("formats non-secret memory identity details", () => {
 			aiPeer: "pi",
 			sessionId: "repo-123",
 			credentialSource: "Honcho config",
-			projectPolicy: "enabled",
+			repositoryMemory: "enabled",
 		}),
-		"Honcho: connected\nWorkspace: pi\nUser peer: g\nPi peer: pi\nSession: repo-123\nCredentials: Honcho config\nProject policy: enabled",
+		"Honcho: connected\nWorkspace: pi\nUser peer: g\nPi peer: pi\nSession: repo-123\nCredentials: Honcho config\nRepository memory: enabled",
 	);
 });

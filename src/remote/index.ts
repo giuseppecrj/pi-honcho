@@ -23,14 +23,12 @@ import {
 	type HonchoConnectionConfig,
 	isValidHonchoWorkspaceId,
 	resolveHonchoConfig,
-	resolveHonchoWorkspace,
 } from "./config.js";
 import {
 	loadHonchoConfigFile,
-	loadProjectHonchoPolicy,
-	readProjectHonchoPolicyFile,
-	saveHonchoSettings,
-	saveProjectHonchoPolicy,
+	loadHonchoRegistry,
+	repositoryOrigin,
+	saveHonchoRegistry,
 } from "./config-file.js";
 import {
 	ExchangeDeliveryQueue,
@@ -58,14 +56,11 @@ import {
 	formatMemoryContext,
 } from "./memory-context.js";
 import { disableProjectMemoryNow } from "./privacy-barrier.js";
-import type { ProjectHonchoPolicy } from "./project-policy.js";
 import {
-	disableProjectPolicy,
-	type ProjectPolicyCommandContext,
-	type ProjectPolicyStore,
-	projectPolicyPath,
-	setupProjectPolicy,
-} from "./project-policy-command.js";
+	canonicalRepositoryKey,
+	resolveRepositoryEntry,
+	updateRepositoryEntry,
+} from "./registry.js";
 import { repositorySessionKey } from "./session-key.js";
 import {
 	type HonchoMemoryClient,
@@ -200,10 +195,10 @@ type StartupClientFactory = (
 ) => HonchoLifecycleClient;
 
 interface StartupConfiguration {
-	policy: ProjectHonchoPolicy;
 	workspace: {
 		workspaceId: string;
 		workspaceSource: StatusDetails["workspaceSource"];
+		enabled: boolean;
 	};
 	configuration: HonchoConfiguration;
 }
@@ -222,27 +217,69 @@ interface StartupSession {
 async function resolveStartupConfiguration(
 	ctx: ExtensionContext,
 ): Promise<StartupConfiguration> {
-	const policy = await loadProjectHonchoPolicy(ctx.cwd, ctx.isProjectTrusted());
-	const configFile = await loadHonchoConfigFile();
-	const workspace = resolveHonchoWorkspace(
-		process.env,
-		configFile,
-		policy.workspaceId,
+	const [registry, configFile, origin] = await Promise.all([
+		loadHonchoRegistry(),
+		loadHonchoConfigFile(),
+		repositoryOrigin(ctx.cwd),
+	]);
+	if (!registry) {
+		return {
+			workspace: {
+				workspaceId: "",
+				workspaceSource: "default",
+				enabled: false,
+			},
+			configuration: {
+				kind: "disabled",
+				reason:
+					"Honcho registry is invalid. Repair it before using remote memory.",
+			},
+		};
+	}
+	const entry = resolveRepositoryEntry(
+		registry,
+		canonicalRepositoryKey(ctx.cwd, origin),
 	);
+	if (!entry) {
+		return {
+			workspace: {
+				workspaceId: "",
+				workspaceSource: "default",
+				enabled: false,
+			},
+			configuration: {
+				kind: "unconfigured",
+				reason: "This repository is not initialized. Use /honcho init.",
+			},
+		};
+	}
 	const configured = resolveHonchoConfig(
 		process.env,
 		configFile,
-		policy.workspaceId,
+		entry.workspaceId,
 	);
+	const configuration =
+		configured.kind === "configured"
+			? {
+					...configured,
+					config: {
+						...configured.config,
+						workspaceId: entry.workspaceId,
+						workspaceSource: "registry" as const,
+						peerName: registry.identity.userPeer,
+						aiPeer: registry.identity.aiPeer,
+					},
+				}
+			: configured;
 	return {
-		policy,
-		workspace,
-		configuration: policy.enabled
-			? configured
-			: {
-					kind: "disabled",
-					reason: policy.reason ?? "Disabled by trusted project policy",
-				},
+		workspace: {
+			workspaceId: entry.workspaceId,
+			workspaceSource: "registry",
+			enabled: entry.enabled,
+		},
+		configuration: entry.enabled
+			? configuration
+			: { kind: "disabled", reason: "Disabled for this repository" },
 	};
 }
 
@@ -268,9 +305,7 @@ function startupStatusDetails(startup: StartupConfiguration): StatusDetails {
 			? "environment"
 			: "Honcho config",
 		workspaceSource: startup.workspace.workspaceSource,
-		projectPolicy: startup.policy.enabled ? "enabled" : "disabled",
-		projectPolicyPath: startup.policy.policyPath,
-		projectPolicyReason: startup.policy.reason,
+		repositoryMemory: startup.workspace.enabled ? "enabled" : "disabled",
 	};
 }
 
@@ -701,15 +736,75 @@ export default function honchoMemory(
 		},
 	});
 
-	async function setupCommand(
-		_args: string,
-		ctx: ExtensionContext,
-	): Promise<void> {
-		if (!ctx.hasUI) return;
-		const workspaceId = await ctx.ui.input(
-			"Honcho workspace",
-			statusDetails.workspaceId ?? "pi",
+	async function repositoryState(ctx: ExtensionContext) {
+		const [registry, origin] = await Promise.all([
+			loadHonchoRegistry(),
+			repositoryOrigin(ctx.cwd),
+		]);
+		const key = canonicalRepositoryKey(ctx.cwd, origin);
+		return {
+			registry,
+			key,
+			entry: registry ? resolveRepositoryEntry(registry, key) : undefined,
+		};
+	}
+
+	function requireTrustedRepository(ctx: ExtensionContext): boolean {
+		if (ctx.isProjectTrusted()) return true;
+		ctx.ui.notify(
+			"Trust this repository before changing Honcho memory.",
+			"warning",
 		);
+		return false;
+	}
+
+	async function chooseWorkspace(ctx: ExtensionContext, current?: string) {
+		const initial = current ?? "pi";
+		const environment = { ...process.env };
+		delete environment.HONCHO_WORKSPACE_ID;
+		const configured = resolveHonchoConfig(
+			environment,
+			await loadHonchoConfigFile(),
+			initial,
+		);
+		const client =
+			toolClient ??
+			(configured.kind === "configured"
+				? createLifecycleClient({
+						...configured.config,
+						workspaceId: initial,
+						workspaceSource: "registry",
+					})
+				: undefined);
+		if (!client) return ctx.ui.input("Honcho workspace", initial);
+		try {
+			const workspaces = await client.listWorkspaces();
+			const create = "Use a new workspace ID…";
+			const selected = await ctx.ui.select("Choose Honcho workspace", [
+				...(current ? [`Keep current workspace (${current})`] : []),
+				...workspaces.filter((workspace) => workspace !== current),
+				create,
+			]);
+			if (selected === `Keep current workspace (${current})`) return current;
+			return selected === create
+				? ctx.ui.input("New Honcho workspace ID", initial)
+				: selected;
+		} catch {
+			return ctx.ui.input("Honcho workspace", initial);
+		}
+	}
+
+	async function initCommand(ctx: ExtensionContext): Promise<void> {
+		if (!ctx.hasUI || !requireTrustedRepository(ctx)) return;
+		const state = await repositoryState(ctx);
+		if (!state.registry) {
+			ctx.ui.notify(
+				"Honcho registry is invalid. Repair it before using remote memory.",
+				"error",
+			);
+			return;
+		}
+		const workspaceId = await chooseWorkspace(ctx, state.entry?.workspaceId);
 		if (!isValidHonchoWorkspaceId(workspaceId)) {
 			ctx.ui.notify(
 				"Workspace IDs must use only letters, digits, underscores, or hyphens.",
@@ -717,65 +812,121 @@ export default function honchoMemory(
 			);
 			return;
 		}
-		const peerName = await ctx.ui.input(
-			"Stable user peer",
-			statusDetails.userPeer ?? "user",
+		if (
+			state.entry &&
+			!(await ctx.ui.confirm(
+				"Replace repository memory mapping?",
+				`Replace this repository's workspace ${state.entry.workspaceId} with ${workspaceId}?`,
+			))
+		)
+			return;
+		const saved = await saveHonchoRegistry(
+			updateRepositoryEntry(state.registry, state.key, {
+				workspaceId,
+				enabled: true,
+			}),
 		);
-		const aiPeer = await ctx.ui.input("Pi peer", statusDetails.aiPeer ?? "pi");
-		if (!workspaceId || !peerName || !aiPeer) return;
-		const saved = await saveHonchoSettings({ workspaceId, peerName, aiPeer });
 		ctx.ui.notify(
 			saved
-				? "Saved non-secret Honcho settings. Reload Pi to apply them."
-				: "Could not save Honcho settings.",
+				? "Initialized repository memory. Start a fresh conversation."
+				: "Could not save repository memory.",
 			saved ? "info" : "error",
 		);
 	}
 
-	pi.registerCommand("honcho-setup", {
-		description: "Configure non-secret Honcho workspace and peer identities.",
-		handler: setupCommand,
-	});
-
-	async function projectPolicyCommand(
-		args: string,
-		ctx: ExtensionContext,
-	): Promise<void> {
+	async function setupCommand(ctx: ExtensionContext): Promise<void> {
 		if (!ctx.hasUI) return;
-		const commandContext: ProjectPolicyCommandContext = {
-			cwd: ctx.cwd,
-			isProjectTrusted: () => ctx.isProjectTrusted(),
-			confirm: (title, details) => ctx.ui.confirm(title, details),
-			input: (label, initial) => ctx.ui.input(label, initial),
-			notify: (message, level) => ctx.ui.notify(message, level),
-		};
-		const store: ProjectPolicyStore = {
-			path: projectPolicyPath(ctx.cwd),
-			read: () => readProjectHonchoPolicyFile(ctx.cwd),
-			write: (policy) => saveProjectHonchoPolicy(ctx.cwd, policy),
-		};
-		if (args.trim() === "disable") {
-			await disableProjectPolicy(
-				commandContext,
-				store,
-				disableCurrentProjectMemory,
+		const registry = await loadHonchoRegistry();
+		if (!registry) {
+			ctx.ui.notify(
+				"Honcho registry is invalid. Repair it before changing identities.",
+				"error",
 			);
 			return;
 		}
-		if (args.trim()) {
+		const userPeer = await ctx.ui.input(
+			"Stable user peer",
+			registry.identity.userPeer,
+		);
+		const aiPeer = await ctx.ui.input("Pi peer", registry.identity.aiPeer);
+		const nextUserPeer = userPeer?.trim();
+		const nextAiPeer = aiPeer?.trim();
+		if (!nextUserPeer || !nextAiPeer) return;
+		const identity = { userPeer: nextUserPeer, aiPeer: nextAiPeer };
+		const changed =
+			identity.userPeer !== registry.identity.userPeer ||
+			identity.aiPeer !== registry.identity.aiPeer;
+		if (
+			changed &&
+			Object.keys(registry.repositories).length > 0 &&
+			!(await ctx.ui.confirm(
+				"Change stable Honcho identities?",
+				"This changes the identity used by initialized repositories.",
+			))
+		)
+			return;
+		const saved = await saveHonchoRegistry({
+			...registry,
+			identity,
+		});
+		ctx.ui.notify(
+			saved
+				? "Saved stable Honcho identities. Start a fresh conversation."
+				: "Could not save Honcho identities.",
+			saved ? "info" : "error",
+		);
+	}
+
+	async function setRepositoryEnabled(
+		ctx: ExtensionContext,
+		enabled: boolean,
+	): Promise<void> {
+		if (!ctx.hasUI || !requireTrustedRepository(ctx)) return;
+		const state = await repositoryState(ctx);
+		if (!state.registry) {
 			ctx.ui.notify(
-				"Use /honcho-project-policy or /honcho-project-policy disable.",
+				"Honcho registry is invalid. Repair it before changing memory.",
+				"error",
+			);
+			return;
+		}
+		if (!state.entry) {
+			ctx.ui.notify(
+				"Initialize this repository first with /honcho init.",
 				"warning",
 			);
 			return;
 		}
-		await setupProjectPolicy(commandContext, store);
+		const saved = await saveHonchoRegistry(
+			updateRepositoryEntry(state.registry, state.key, {
+				...state.entry,
+				enabled,
+			}),
+		);
+		if (saved && !enabled) disableCurrentProjectMemory();
+		ctx.ui.notify(
+			saved
+				? `${enabled ? "Enabled" : "Disabled"} repository memory. Start a fresh conversation.`
+				: "Could not save repository memory.",
+			saved ? "info" : "error",
+		);
 	}
 
-	pi.registerCommand("honcho-project-policy", {
-		description:
-			"Create or replace this trusted folder's policy; add disable to opt out immediately.",
-		handler: projectPolicyCommand,
+	pi.registerCommand("honcho-init", {
+		description: "Initialize trusted repository memory.",
+		handler: (_args, ctx) => initCommand(ctx),
+	});
+	pi.registerCommand("honcho-setup", {
+		description: "Change stable Honcho identities.",
+		handler: (_args, ctx) => setupCommand(ctx),
+	});
+	pi.registerCommand("honcho-enable", {
+		description: "Enable initialized repository memory.",
+		handler: (_args, ctx) => setRepositoryEnabled(ctx, true),
+	});
+	pi.registerCommand("honcho-disable", {
+		description: "Immediately disable repository memory.",
+		handler: (_args, ctx) => setRepositoryEnabled(ctx, false),
 	});
 
 	async function forgetCommand(
@@ -973,9 +1124,10 @@ export default function honchoMemory(
 					);
 				},
 				status: () => statusCommand("", ctx),
-				setup: () => setupCommand("", ctx),
-				projectSetup: () => projectPolicyCommand("", ctx),
-				projectDisable: () => projectPolicyCommand("disable", ctx),
+				init: () => initCommand(ctx),
+				setup: () => setupCommand(ctx),
+				enable: () => setRepositoryEnabled(ctx, true),
+				disable: () => setRepositoryEnabled(ctx, false),
 				forget: (forgetArgs) => forgetCommand(forgetArgs, ctx),
 				workspaceReset: () => resetWorkspace("", ctx),
 				invalid: () => {

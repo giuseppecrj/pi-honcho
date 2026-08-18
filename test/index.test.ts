@@ -1,5 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdtemp } from "node:fs/promises";
 import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import test from "node:test";
 
 import {
@@ -8,7 +11,31 @@ import {
 	SessionManager,
 } from "@earendil-works/pi-coding-agent";
 
+import {
+	loadHonchoRegistry,
+	repositoryOrigin,
+	saveHonchoRegistry,
+} from "../src/remote/config-file.js";
 import honchoMemory from "../src/remote/index.js";
+import {
+	canonicalRepositoryKey,
+	initialRegistry,
+	updateRepositoryEntry,
+} from "../src/remote/registry.js";
+
+process.env.PI_CODING_AGENT_DIR = await mkdtemp(
+	join(tmpdir(), "pi-honcho-agent-"),
+);
+const testRepositoryKey = canonicalRepositoryKey(
+	process.cwd(),
+	await repositoryOrigin(process.cwd()),
+);
+await saveHonchoRegistry(
+	updateRepositoryEntry(initialRegistry(), testRepositoryKey, {
+		workspaceId: "pi",
+		enabled: true,
+	}),
+);
 
 class FakePiRuntime {
 	readonly handlers = new Map<string, unknown>();
@@ -128,6 +155,7 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 		search: async () => [],
 		chat: async () => undefined,
 		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
 		deleteSession: async () => undefined,
 		deleteConclusion: async () => undefined,
 		inspectWorkspace: async () => ({
@@ -175,6 +203,64 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 	}
 });
 
+test("setup trims stable identities before saving them", async () => {
+	const registry = await loadHonchoRegistry();
+	assert.ok(registry);
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI);
+	const setup = pi.commands.get("honcho-setup")?.handler;
+	assert.ok(setup);
+	try {
+		await setup("", {
+			...startupContext(),
+			ui: {
+				input: async (label: string) =>
+					label === "Stable user peer" ? " user " : " pi ",
+				confirm: async () => true,
+				notify: () => undefined,
+				setStatus: () => undefined,
+			},
+		} as unknown as ExtensionContext);
+		assert.deepEqual((await loadHonchoRegistry())?.identity, {
+			userPeer: "user",
+			aiPeer: "pi",
+		});
+	} finally {
+		await saveHonchoRegistry(registry);
+	}
+});
+
+test("legacy workspace configuration cannot activate an uninitialized repository", async () => {
+	const previous = Object.fromEntries(
+		["HONCHO_API_KEY", "HONCHO_WORKSPACE_ID"].map((name) => [
+			name,
+			process.env[name],
+		]),
+	);
+	process.env.HONCHO_API_KEY = "test-key";
+	process.env.HONCHO_WORKSPACE_ID = "legacy-workspace";
+	const cwd = await mkdtemp(join(tmpdir(), "pi-honcho-uninitialized-"));
+	try {
+		const pi = new FakePiRuntime();
+		let factoryCalls = 0;
+		honchoMemory(pi as unknown as ExtensionAPI, () => {
+			factoryCalls += 1;
+			throw new Error("unexpected client creation");
+		});
+		const handler = pi.handlers.get("session_start") as (
+			event: { reason: "startup" },
+			ctx: ExtensionContext,
+		) => Promise<void>;
+		const statuses: string[] = [];
+		await handler({ reason: "startup" }, { ...startupContext(statuses), cwd });
+		assert.equal(factoryCalls, 0);
+		assert.match(statuses.at(-1) ?? "", /not initialized/i);
+	} finally {
+		restoreEnvironment("HONCHO_API_KEY", previous.HONCHO_API_KEY);
+		restoreEnvironment("HONCHO_WORKSPACE_ID", previous.HONCHO_WORKSPACE_ID);
+	}
+});
+
 test("fails open and keeps Honcho tools inactive when startup is disabled", async () => {
 	const previous = process.env.HONCHO_ENABLED;
 	process.env.HONCHO_ENABLED = "0";
@@ -195,7 +281,7 @@ test("fails open and keeps Honcho tools inactive when startup is disabled", asyn
 	}
 });
 
-test("rejects invalid global setup workspaces before saving settings", async () => {
+test("setup requires non-empty stable identities", async () => {
 	const pi = new FakePiRuntime();
 	const notifications: Array<{ message: string; level: string }> = [];
 	let inputs = 0;
@@ -208,7 +294,7 @@ test("rejects invalid global setup workspaces before saving settings", async () 
 		ui: {
 			input: async () => {
 				inputs += 1;
-				return "invalid.workspace";
+				return undefined;
 			},
 			notify: (message: string, level: string) =>
 				notifications.push({ message, level }),
@@ -216,12 +302,8 @@ test("rejects invalid global setup workspaces before saving settings", async () 
 		},
 	} as unknown as ExtensionContext);
 
-	assert.equal(inputs, 1);
-	assert.equal(notifications[0].level, "warning");
-	assert.match(
-		notifications[0].message,
-		/letters, digits, underscores, or hyphens/,
-	);
+	assert.equal(inputs, 2);
+	assert.deepEqual(notifications, []);
 });
 
 test("does not create a client for an invalid effective workspace", async () => {
@@ -310,6 +392,7 @@ test("uses remote reconciliation only for pending recovery delivery", async () =
 		search: async () => [],
 		chat: async () => undefined,
 		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
 		deleteSession: async () => undefined,
 		deleteConclusion: async () => undefined,
 		inspectWorkspace: async () => ({
@@ -454,6 +537,7 @@ test("reconciles older post-reset delivery before normally delivering the exchan
 		search: async () => [],
 		chat: async () => undefined,
 		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
 		deleteSession: async () => undefined,
 		deleteConclusion: async () => undefined,
 		inspectWorkspace: async () => ({

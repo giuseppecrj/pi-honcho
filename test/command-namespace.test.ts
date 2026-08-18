@@ -11,13 +11,10 @@ test("parses namespace commands and keeps action arguments", () => {
 	assert.deepEqual(parseHonchoCommand(""), { kind: "help" });
 	assert.deepEqual(parseHonchoCommand("help"), { kind: "help" });
 	assert.deepEqual(parseHonchoCommand("status"), { kind: "status" });
+	assert.deepEqual(parseHonchoCommand("init"), { kind: "init" });
 	assert.deepEqual(parseHonchoCommand("setup"), { kind: "setup" });
-	assert.deepEqual(parseHonchoCommand("project setup"), {
-		kind: "project-setup",
-	});
-	assert.deepEqual(parseHonchoCommand("project disable"), {
-		kind: "project-disable",
-	});
+	assert.deepEqual(parseHonchoCommand("enable"), { kind: "enable" });
+	assert.deepEqual(parseHonchoCommand("disable"), { kind: "disable" });
 	assert.deepEqual(parseHonchoCommand("forget conclusion conclusion-1"), {
 		kind: "forget",
 		args: "conclusion conclusion-1",
@@ -43,9 +40,10 @@ test("dispatches root, help, actions, and invalid commands", async () => {
 	const operations = {
 		help: async () => record("help"),
 		status: async () => record("status"),
+		init: async () => record("init"),
 		setup: async () => record("setup"),
-		projectSetup: async () => record("project setup"),
-		projectDisable: async () => record("project disable"),
+		enable: async () => record("enable"),
+		disable: async () => record("disable"),
 		forget: async (args: string) => record(`forget ${args}`),
 		workspaceReset: async () => record("workspace reset"),
 		invalid: () => record("invalid"),
@@ -54,9 +52,10 @@ test("dispatches root, help, actions, and invalid commands", async () => {
 	await dispatchHonchoCommand("", operations);
 	await dispatchHonchoCommand("help", operations);
 	await dispatchHonchoCommand("status", operations);
+	await dispatchHonchoCommand("init", operations);
 	await dispatchHonchoCommand("setup", operations);
-	await dispatchHonchoCommand("project setup", operations);
-	await dispatchHonchoCommand("project disable", operations);
+	await dispatchHonchoCommand("enable", operations);
+	await dispatchHonchoCommand("disable", operations);
 	await dispatchHonchoCommand("forget session", operations);
 	await dispatchHonchoCommand("workspace-reset", operations);
 	await dispatchHonchoCommand("unknown", operations);
@@ -65,9 +64,10 @@ test("dispatches root, help, actions, and invalid commands", async () => {
 		"help",
 		"help",
 		"status",
+		"init",
 		"setup",
-		"project setup",
-		"project disable",
+		"enable",
+		"disable",
 		"forget session",
 		"workspace reset",
 		"invalid",
@@ -75,8 +75,8 @@ test("dispatches root, help, actions, and invalid commands", async () => {
 });
 
 test("offers command argument completions", () => {
-	assert.deepEqual(commandArgumentCompletions("project d"), [
-		{ value: "project disable", label: "project disable" },
+	assert.deepEqual(commandArgumentCompletions("dis"), [
+		{ value: "disable", label: "disable" },
 	]);
 	assert.deepEqual(commandArgumentCompletions("for"), [
 		{ value: "forget", label: "forget" },
@@ -87,7 +87,7 @@ test("offers command argument completions", () => {
 test("formats concise help with current status", () => {
 	assert.match(
 		formatHonchoCommandHelp("Honcho: connected\nWorkspace: pi"),
-		/\/honcho project disable/,
+		/\/honcho disable/,
 	);
 	assert.match(
 		formatHonchoCommandHelp("Honcho: connected\nWorkspace: pi"),

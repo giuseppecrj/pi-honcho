@@ -97,16 +97,17 @@ The ledger records are local Pi session entries. Recalled context stays in the r
 | Command | Action |
 | --- | --- |
 | `/honcho` or `/honcho help` | Show command help and current status. |
-| `/honcho status` | Show connection, workspace, peer, session, and project-policy status. |
-| `/honcho setup` | Save non-secret workspace and peer identity settings. |
-| `/honcho project setup` | Create or replace the current trusted project's enabled policy. |
-| `/honcho project disable` | Disable remote recall and future delivery for the current trusted project. |
+| `/honcho status` | Show connection, repository, workspace, peer, and session status. |
+| `/honcho init` | Select or create a workspace and initialize the current trusted repository. |
+| `/honcho setup` | Change the stable user and Pi identities. |
+| `/honcho enable` | Enable memory for an initialized trusted repository. |
+| `/honcho disable` | Immediately stop recall, delivery, clients, and tools for an initialized trusted repository. |
 | `/honcho forget session` | Confirm deletion of the active remote memory session. |
 | `/honcho forget conclusion <id>` | Confirm deletion of one remote conclusion. |
 | `/honcho workspace-reset` | Inspect, typed-confirm, and delete the configured remote workspace. |
 | `/memory-pin` | List, add, remove, or clear standing instructions. |
 
-Direct command aliases are also available: `/honcho-status`, `/honcho-setup`, `/honcho-project-policy`, `/honcho-forget`, and `/honcho-reset-workspace`.
+Direct command aliases are also available: `/honcho-status`, `/honcho-init`, `/honcho-setup`, `/honcho-enable`, `/honcho-disable`, `/honcho-forget`, and `/honcho-reset-workspace`.
 
 Standing-instruction examples:
 
@@ -121,7 +122,7 @@ Standing-instruction examples:
 
 ### Honcho tools
 
-These tools are available only while the Honcho connection is healthy and enabled for the current project.
+These tools are available only while the Honcho connection is healthy and the current repository is enabled.
 
 | Tool | Purpose |
 | --- | --- |
@@ -144,44 +145,13 @@ These tools do not require Honcho and remain available offline.
 
 You can configure Honcho with environment variables or `~/.honcho/config.json`.
 
-A dedicated host block keeps this extension's identity separate from other Honcho clients:
+Credentials stay in `~/.honcho/config.json` or environment variables. Pi stores its stable identity and repository mappings in `honcho-memory.json` under `PI_CODING_AGENT_DIR` (default `~/.pi/agent`), separate from credentials.
 
-```json
-{
-  "hosts": {
-    "pi-honcho": {
-      "workspaceId": "pi",
-      "peerName": "your-stable-user-id",
-      "aiPeer": "pi"
-    }
-  }
-}
-```
+A repository is uninitialized until you run `/honcho init` from a trusted project. The registry uses the canonical Git `origin` when available and the resolved directory outside Git. `/honcho disable` retains the workspace mapping. `/honcho enable` restores it. Legacy workspace settings and `.pi/honcho-memory.json` project-policy files do not activate memory.
 
-`/honcho setup` writes only `workspaceId`, `peerName`, and `aiPeer`. It never asks for or stores an API key.
+Pi uses `user` and `pi` as the default peer IDs. Use `/honcho setup` to change them. Pi confirms an identity change when it affects initialized repositories.
 
-Workspace IDs must contain only letters, digits, `_`, and `-`, for example `pi-user_1`. Pi rejects invalid IDs without changing them. If configuration is rejected, correct `HONCHO_WORKSPACE_ID` or `workspaceId` in Honcho config, then reload Pi.
-
-### Use one user representation with another Honcho host
-
-Use separate workspaces per integration by default; this is the safer isolation boundary. To intentionally join one user representation with another Honcho integration, configure both hosts with the same `workspaceId` and stable `peerName`:
-
-```json
-{
-  "hosts": {
-    "pi-honcho": {
-      "workspaceId": "shared-user-workspace",
-      "peerName": "your-stable-user-id"
-    },
-    "another-honcho-host": {
-      "workspaceId": "shared-user-workspace",
-      "peerName": "your-stable-user-id"
-    }
-  }
-}
-```
-
-This intentionally joins user-representation data; it does not create team memory or cross-host repository-session sharing. Pi repository sessions remain namespaced by stable peer in a shared workspace, and remote context is not automatically recalled on every turn.
+Workspace IDs must contain only letters, digits, `_`, and `-`, for example `pi-user_1`. Pi rejects invalid IDs without changing them.
 
 ### Environment variables
 
@@ -189,45 +159,11 @@ This intentionally joins user-representation data; it does not create team memor
 | --- | --- | --- |
 | `HONCHO_API_KEY` | Honcho API key. | Required unless present in Honcho config. |
 | `HONCHO_BASE_URL` | Honcho API endpoint override. | Honcho SDK default. |
-| `HONCHO_ENABLED` | Set to `false` or `0` to disable remote memory. | Enabled when credentials exist. |
-| `HONCHO_WORKSPACE_ID` | Workspace override. | `pi` |
-| `HONCHO_PEER_NAME` | Stable user peer ID. | `user` |
-| `HONCHO_AI_PEER` | Pi peer ID. | `pi` |
+| `HONCHO_ENABLED` | Set to `false` or `0` to disable remote memory. | Enabled for an enabled repository when credentials exist. |
 | `HONCHO_MAX_MESSAGE_LENGTH` | Maximum safe message chunk size. | `8000` |
 | `PI_CODING_AGENT_DIR` | Pi agent data directory used by local knowledge tools. | `~/.pi/agent` |
 
-Configuration precedence is:
-
-1. Environment variables
-2. Trusted project policy for workspace selection or remote-memory opt-out
-3. `hosts.pi-honcho` in `~/.honcho/config.json`
-4. Compatible top-level Honcho CLI settings
-5. Built-in defaults
-
-Restart or reload Pi after changing environment or Honcho configuration.
-
-## Project policy
-
-A trusted repository can select its workspace or disable remote memory with `.pi/honcho-memory.json`.
-
-Enable a project workspace:
-
-```json
-{
-  "enabled": true,
-  "workspace": "project-workspace"
-}
-```
-
-Disable remote memory:
-
-```json
-{
-  "enabled": false
-}
-```
-
-Pi ignores project policy files until the project is trusted. A policy may contain only `enabled` and an optional `workspace`. Workspace IDs must contain only letters, digits, `_`, and `-`; correct an invalid trusted policy file and reload Pi. Do not put credentials or endpoint settings in it. An ancestor opt-out also applies to child directories.
+Restart or reload Pi after changing credentials or environment configuration. Use `/honcho init`, `/honcho enable`, and `/honcho disable` to change the repository lifecycle.
 
 ## Privacy and data lifecycle
 

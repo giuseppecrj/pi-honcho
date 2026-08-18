@@ -4,12 +4,12 @@ import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises"; // pi
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-
 import { HONCHO_HOST_NAME, isValidHonchoWorkspaceId } from "./config.js";
 import {
 	discoverProjectHonchoPolicy,
 	isValidProjectHonchoPolicy,
 } from "./project-policy.js";
+import { type HonchoRegistry, initialRegistry } from "./registry.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -27,8 +27,74 @@ function configPath(): string {
 	return join(homedir(), ".honcho", "config.json");
 }
 
+function registryPath(): string {
+	return join(
+		process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent"),
+		"honcho-memory.json",
+	);
+}
+
 export async function loadHonchoConfigFile(): Promise<unknown> {
 	return loadJson(configPath());
+}
+
+function isRegistry(value: unknown): value is HonchoRegistry {
+	if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+	const registry = value as Partial<HonchoRegistry>;
+	return (
+		registry.version === 1 &&
+		Boolean(registry.identity) &&
+		typeof registry.identity?.userPeer === "string" &&
+		Boolean(registry.identity.userPeer.trim()) &&
+		typeof registry.identity?.aiPeer === "string" &&
+		Boolean(registry.identity.aiPeer.trim()) &&
+		Boolean(registry.repositories) &&
+		Object.values(registry.repositories ?? {}).every(
+			(entry) =>
+				Boolean(entry) &&
+				typeof entry.workspaceId === "string" &&
+				isValidHonchoWorkspaceId(entry.workspaceId) &&
+				typeof entry.enabled === "boolean",
+		)
+	);
+}
+
+export async function loadHonchoRegistry(): Promise<
+	HonchoRegistry | undefined
+> {
+	try {
+		const registry: unknown = JSON.parse(
+			await readFile(registryPath(), "utf8"),
+		);
+		return isRegistry(registry) ? registry : undefined;
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === "ENOENT"
+			? initialRegistry()
+			: undefined;
+	}
+}
+
+export async function saveHonchoRegistry(
+	registry: HonchoRegistry,
+): Promise<boolean> {
+	return isRegistry(registry) && writeJsonAtomically(registryPath(), registry);
+}
+
+export async function repositoryOrigin(
+	cwd: string,
+): Promise<string | undefined> {
+	try {
+		const { stdout } = await execFileAsync(
+			"git",
+			["config", "--get", "remote.origin.url"],
+			{
+				cwd,
+			},
+		);
+		return stdout.trim() || undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 async function gitRoot(cwd: string): Promise<string | undefined> {
@@ -95,8 +161,8 @@ export async function saveProjectHonchoPolicy(
 
 export async function saveHonchoSettings(settings: {
 	workspaceId: string;
-	peerName: string;
-	aiPeer: string;
+	peerName?: string;
+	aiPeer?: string;
 }): Promise<boolean> {
 	if (!isValidHonchoWorkspaceId(settings.workspaceId)) return false;
 	try {
@@ -113,7 +179,12 @@ export async function saveHonchoSettings(settings: {
 			...config,
 			hosts: {
 				...hosts,
-				[HONCHO_HOST_NAME]: { ...host, ...settings },
+				[HONCHO_HOST_NAME]: {
+					...host,
+					workspaceId: settings.workspaceId,
+					...(settings.peerName ? { peerName: settings.peerName } : {}),
+					...(settings.aiPeer ? { aiPeer: settings.aiPeer } : {}),
+				},
 			},
 		};
 		return writeJsonAtomically(configPath(), next);

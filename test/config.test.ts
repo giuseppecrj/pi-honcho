@@ -309,6 +309,18 @@ test("setup writes only non-secret primary settings and preserves unrelated conf
 			aiPeer: "setup-ai",
 		});
 		assert.equal(
+			await saveHonchoSettings({ workspaceId: "selected-workspace" }),
+			true,
+		);
+		const selected = JSON.parse(await readFile(path, "utf8")) as {
+			hosts?: Record<string, Record<string, unknown>>;
+		};
+		assert.deepEqual(selected.hosts?.["pi-honcho"], {
+			workspaceId: "selected-workspace",
+			peerName: "setup-user",
+			aiPeer: "setup-ai",
+		});
+		assert.equal(
 			await saveHonchoSettings({
 				workspaceId: "invalid.workspace",
 				peerName: "other-user",
@@ -316,7 +328,7 @@ test("setup writes only non-secret primary settings and preserves unrelated conf
 			}),
 			false,
 		);
-		assert.deepEqual(JSON.parse(await readFile(path, "utf8")), saved);
+		assert.deepEqual(JSON.parse(await readFile(path, "utf8")), selected);
 	} finally {
 		if (previousHome === undefined) delete process.env.HOME;
 		else process.env.HOME = previousHome;

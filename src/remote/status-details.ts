@@ -5,15 +5,8 @@ export interface StatusDetails {
 	aiPeer?: string;
 	sessionId?: string;
 	credentialSource?: "environment" | "Honcho config";
-	workspaceSource?:
-		| "environment"
-		| "project policy"
-		| "Honcho config"
-		| "default"
-		| "configuration";
-	projectPolicy?: string;
-	projectPolicyPath?: string;
-	projectPolicyReason?: string;
+	workspaceSource?: "registry" | "default";
+	repositoryMemory?: "enabled" | "disabled";
 }
 
 export function formatStatusDetails(details: StatusDetails): string {
@@ -29,14 +22,8 @@ export function formatStatusDetails(details: StatusDetails): string {
 		details.credentialSource
 			? `Credentials: ${details.credentialSource}`
 			: undefined,
-		details.projectPolicy
-			? `Project policy: ${details.projectPolicy}`
-			: undefined,
-		details.projectPolicyPath
-			? `Policy path: ${details.projectPolicyPath}`
-			: undefined,
-		details.projectPolicyReason
-			? `Policy reason: ${details.projectPolicyReason}`
+		details.repositoryMemory
+			? `Repository memory: ${details.repositoryMemory}`
 			: undefined,
 	]
 		.filter((line): line is string => line !== undefined)

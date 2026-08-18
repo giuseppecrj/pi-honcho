@@ -1,6 +1,9 @@
 import { Honcho } from "@honcho-ai/sdk"; // pi-lens-ignore: find-import-file-without-extension
 
-import type { HonchoConnectionConfig } from "./config.js";
+import {
+	type HonchoConnectionConfig,
+	isValidHonchoWorkspaceId,
+} from "./config.js";
 import type { HonchoExchangeClient, HonchoRecoveryClient } from "./delivery.js";
 import type { FinalizedExchange } from "./exchange.js";
 import { chunkText } from "./exchange.js";
@@ -121,6 +124,7 @@ export interface HonchoToolClient {
 	search(sessionId: string, query: string): Promise<string[]>;
 	chat(sessionId: string, query: string): Promise<string | undefined>;
 	remember(sessionId: string, content: string): Promise<string>;
+	listWorkspaces(): Promise<string[]>;
 	deleteSession(sessionId: string): Promise<void>;
 	deleteConclusion(sessionId: string, conclusionId: string): Promise<void>;
 	inspectWorkspace(): Promise<WorkspaceInspection>;
@@ -313,6 +317,26 @@ export class SdkHonchoMemoryClient
 				: undefined,
 			"a conclusion ID",
 		);
+	}
+
+	async listWorkspaces(): Promise<string[]> {
+		return this.direct(async (client) => {
+			const page = sdkPage<string>(
+				await client.workspaces(),
+				"workspace response",
+			);
+			const workspaceIds = await page.toArray();
+			if (
+				!Array.isArray(workspaceIds) ||
+				workspaceIds.some(
+					(workspaceId) => !isValidHonchoWorkspaceId(workspaceId),
+				)
+			)
+				throw new Error("Honcho returned a malformed workspace list");
+			return [...new Set(workspaceIds)].sort((left, right) =>
+				left.localeCompare(right),
+			);
+		});
 	}
 
 	async inspectWorkspace(): Promise<WorkspaceInspection> {

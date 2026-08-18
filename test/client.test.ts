@@ -390,6 +390,19 @@ test("injects the SDK factory and probes the configured workspace", async () => 
 	await client.checkConnection();
 });
 
+test("lists valid workspaces in stable order", async () => {
+	const fake = new FakeSdk();
+	fake.workspaceProbeResponses.push(new FakePage(["zeta", "alpha", "zeta"]));
+
+	assert.deepEqual(await adapter(fake).listWorkspaces(), ["alpha", "zeta"]);
+
+	fake.workspaceProbeResponses.push(new FakePage(["invalid.workspace"]));
+	await assert.rejects(
+		adapter(fake).listWorkspaces(),
+		/malformed workspace list/i,
+	);
+});
+
 test("maps cached recall, delivery, reconciliation, and tool operations", async () => {
 	const fake = new FakeSdk();
 	const session = fake.getSession("project");
