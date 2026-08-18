@@ -5,7 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v0.1.8](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.7...v0.1.8)
+## [v0.1.9](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.8...v0.1.9)
+
+### Commits
+
+- feat: make repository memory explicit [`d581193`](https://github.com/giuseppecrj/pi-honcho/commit/d5811938c6df78c7bdcb958054ebf3b29dd43f0f)
+- feat: simplify Honcho command surface [`1fadb97`](https://github.com/giuseppecrj/pi-honcho/commit/1fadb97bc7f989295df7d11d1ac4139f75ac808f)
+- docs: add agent guidance [`cb5627e`](https://github.com/giuseppecrj/pi-honcho/commit/cb5627e60484d892fcbb54e55e35c043db12e390)
+- chore: configure triage labels [`34a7215`](https://github.com/giuseppecrj/pi-honcho/commit/34a7215918b0a21ee54ba1b2321c5556d772c320)
+- docs: clarify repository memory status [`3d7ccf7`](https://github.com/giuseppecrj/pi-honcho/commit/3d7ccf77be65d1b2a4a98a125f961f470ae69013)
+
+## [v0.1.8](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.7...v0.1.8) - 2026-08-17
 
 ### Commits
 
