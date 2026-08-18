@@ -97,7 +97,7 @@ The ledger records are local Pi session entries. Recalled context stays in the r
 | Command | Action |
 | --- | --- |
 | `/honcho` or `/honcho help` | Show command help and current status. |
-| `/honcho status` | Show connection, repository, workspace, peer, and session status. |
+| `/honcho status` | Show connection, repository-memory, workspace, peer, and repository-session status. |
 | `/honcho init` | Select or create a workspace and initialize the current trusted repository. |
 | `/honcho setup` | Change the stable user and Pi identities. |
 | `/honcho enable` | Enable memory for an initialized trusted repository. |
@@ -145,7 +145,7 @@ You can configure Honcho with environment variables or `~/.honcho/config.json`.
 
 Credentials stay in `~/.honcho/config.json` or environment variables. Pi stores its stable identity and repository mappings in `honcho-memory.json` under `PI_CODING_AGENT_DIR` (default `~/.pi/agent`), separate from credentials.
 
-A repository is uninitialized until you run `/honcho init` from a trusted project. The registry uses the canonical Git `origin` when available and the resolved directory outside Git. `/honcho disable` retains the workspace mapping. `/honcho enable` restores it. Legacy workspace settings and `.pi/honcho-memory.json` project-policy files do not activate memory.
+A repository is uninitialized until you run `/honcho init` from a trusted project. `/honcho status` then tells you to run `/honcho init` and does not show a workspace. The registry uses the canonical Git `origin` when available and the resolved directory outside Git. `/honcho disable` retains the workspace mapping. `/honcho enable` restores it. Legacy workspace settings and `.pi/honcho-memory.json` project-policy files do not activate memory.
 
 Pi uses `user` and `pi` as the default peer IDs. Use `/honcho setup` to change them. Pi confirms an identity change when it affects initialized repositories.
 
