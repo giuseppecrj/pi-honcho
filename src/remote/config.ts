@@ -1,6 +1,7 @@
 import { oauthTokensForHost, validOAuthAccessToken } from "./oauth.js";
 
-export const DEFAULT_TIMEOUT_MS = 3_000;
+/** Bounds a single blocking Honcho request, including live honcho_chat context queries. */
+export const DEFAULT_TIMEOUT_MS = 20_000;
 export const DEFAULT_WORKSPACE_ID = "pi";
 export const DEFAULT_PEER_NAME = "user";
 export const DEFAULT_AI_PEER = "pi";
@@ -53,6 +54,7 @@ interface HostSettings {
 	aiPeer?: unknown;
 	contextCadence?: unknown;
 	reasoningLevel?: unknown;
+	timeoutMs?: unknown;
 }
 
 export const HONCHO_HOST_NAME = "pi-honcho";
@@ -83,6 +85,9 @@ export const isValidReasoningLevel = (
 ): value is HonchoReasoningLevel =>
 	typeof value === "string" &&
 	(HONCHO_REASONING_LEVELS as readonly string[]).includes(value);
+
+export const isValidTimeoutMs = (value: unknown): value is number =>
+	typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 
 function positiveInteger(value: string | undefined, fallback: number): number {
 	const parsed = Number.parseInt(value ?? "", 10);
@@ -127,6 +132,8 @@ function hostSettings(configFile: unknown): HostSettings | undefined {
 			: isValidReasoningLevel(legacy.reasoningLevel)
 				? legacy.reasoningLevel
 				: undefined,
+		timeoutMs:
+			numericString(primary.timeoutMs) ?? numericString(legacy.timeoutMs),
 	};
 }
 
@@ -278,7 +285,12 @@ export function resolveHonchoConfig(
 				cli?.aiPeer,
 				DEFAULT_AI_PEER,
 			),
-			timeoutMs: DEFAULT_TIMEOUT_MS,
+			timeoutMs: positiveInteger(
+				nonEmptyString(env.HONCHO_TIMEOUT_MS) ??
+					numericString(host?.timeoutMs) ??
+					numericString(cli?.timeoutMs),
+				DEFAULT_TIMEOUT_MS,
+			),
 			maxMessageLength: positiveInteger(
 				env.HONCHO_MAX_MESSAGE_LENGTH,
 				DEFAULT_MAX_MESSAGE_LENGTH,

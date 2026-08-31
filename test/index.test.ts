@@ -44,6 +44,15 @@ class FakePiRuntime {
 		string,
 		{ handler: (args: string, ctx: ExtensionContext) => Promise<void> }
 	>();
+	readonly tools = new Map<
+		string,
+		{
+			execute: (
+				id: string,
+				params: Record<string, unknown>,
+			) => Promise<{ content: Array<{ type: string; text: string }> }>;
+		}
+	>();
 	readonly entries: Array<{ customType: string; data: unknown }> = [];
 	activeTools = ["read"];
 
@@ -51,8 +60,15 @@ class FakePiRuntime {
 		this.handlers.set(event, handler);
 	}
 
-	registerTool(tool: { name: string }): void {
+	registerTool(tool: {
+		name: string;
+		execute: (
+			id: string,
+			params: Record<string, unknown>,
+		) => Promise<{ content: Array<{ type: string; text: string }> }>;
+	}): void {
 		this.activeTools.push(tool.name);
+		this.tools.set(tool.name, tool);
 	}
 
 	registerCommand(
@@ -250,6 +266,322 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 	}
 });
 
+test("tells Honcho the reply size budget and skips the query entirely when context is nearly full", async () => {
+	const previous = Object.fromEntries(
+		["HONCHO_API_KEY", "HONCHO_ENABLED", "PI_SUBAGENT_ID"].map((name) => [
+			name,
+			process.env[name],
+		]),
+	);
+	process.env.HONCHO_API_KEY = "test-key";
+	delete process.env.HONCHO_ENABLED;
+	delete process.env.PI_SUBAGENT_ID;
+	const chatCalls: Array<{ sessionId: string; query: string }> = [];
+	const client = {
+		checkConnection: async () => undefined,
+		fetchCachedMemory: async () => ({}),
+		deliverExchange: async () => [],
+		reconcileOperationId: async () => [],
+		cloneSession: async () => "cloned-session",
+		search: async () => [],
+		chat: async (sessionId: string, query: string) => {
+			chatCalls.push({ sessionId, query });
+			return "The cluster runs on us-east-1.";
+		},
+		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
+		deleteSession: async () => undefined,
+		deleteConclusion: async () => undefined,
+		inspectWorkspace: async () => ({
+			workspaceId: "pi",
+			peerIds: [],
+			sessionCount: 0,
+			conclusionCount: 0,
+		}),
+		deleteWorkspace: async () => undefined,
+	};
+	const sessionManager = SessionManager as unknown as {
+		listAll: () => Promise<Array<{ path: string }>>;
+	};
+	const listAll = sessionManager.listAll;
+	sessionManager.listAll = async () => [];
+	let percent: number | null = null;
+	const context = {
+		...startupContext(),
+		getContextUsage: () => ({ tokens: 1, contextWindow: 1, percent }),
+		ui: { setStatus: () => undefined, notify: () => undefined },
+	} as unknown as ExtensionContext;
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI, () => client);
+	const sessionStart = pi.handlers.get("session_start") as (
+		event: { reason: "startup" },
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	const sessionShutdown = pi.handlers.get("session_shutdown") as (
+		event: unknown,
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	try {
+		await sessionStart({ reason: "startup" }, context);
+		const beforeAgentStart = pi.handlers.get("before_agent_start") as (
+			event: { prompt: string },
+			ctx: ExtensionContext,
+		) => void;
+		const contextHandler = pi.handlers.get("context") as (
+			event: { messages: unknown[] },
+			ctx: ExtensionContext,
+		) => Promise<{ messages: Array<{ content: string }> } | undefined>;
+
+		percent = 90;
+		beforeAgentStart({ prompt: "Update my server cluster" }, context);
+		assert.equal(await contextHandler({ messages: [] }, context), undefined);
+		assert.equal(chatCalls.length, 0);
+	} finally {
+		await sessionShutdown({}, context);
+		sessionManager.listAll = listAll;
+		restoreEnvironment("HONCHO_API_KEY", previous.HONCHO_API_KEY);
+		restoreEnvironment("HONCHO_ENABLED", previous.HONCHO_ENABLED);
+		restoreEnvironment("PI_SUBAGENT_ID", previous.PI_SUBAGENT_ID);
+	}
+});
+
+test("context recall waits for in-flight startup instead of racing it", async () => {
+	const previous = Object.fromEntries(
+		["HONCHO_API_KEY", "HONCHO_ENABLED", "PI_SUBAGENT_ID"].map((name) => [
+			name,
+			process.env[name],
+		]),
+	);
+	process.env.HONCHO_API_KEY = "test-key";
+	delete process.env.HONCHO_ENABLED;
+	delete process.env.PI_SUBAGENT_ID;
+	const chatCalls: Array<{ sessionId: string; query: string }> = [];
+	const client = {
+		checkConnection: async () => undefined,
+		fetchCachedMemory: async () => ({}),
+		deliverExchange: async () => [],
+		reconcileOperationId: async () => [],
+		cloneSession: async () => "cloned-session",
+		search: async () => [],
+		chat: async (sessionId: string, query: string) => {
+			chatCalls.push({ sessionId, query });
+			return "The cluster runs on us-east-1.";
+		},
+		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
+		deleteSession: async () => undefined,
+		deleteConclusion: async () => undefined,
+		inspectWorkspace: async () => ({
+			workspaceId: "pi",
+			peerIds: [],
+			sessionCount: 0,
+			conclusionCount: 0,
+		}),
+		deleteWorkspace: async () => undefined,
+	};
+	const sessionManager = SessionManager as unknown as {
+		listAll: () => Promise<Array<{ path: string }>>;
+	};
+	const listAll = sessionManager.listAll;
+	sessionManager.listAll = async () => [];
+	const context = {
+		...startupContext(),
+		getContextUsage: () => undefined,
+	} as unknown as ExtensionContext;
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI, () => client);
+	const sessionStart = pi.handlers.get("session_start") as (
+		event: { reason: "startup" },
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	const sessionShutdown = pi.handlers.get("session_shutdown") as (
+		event: unknown,
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	try {
+		// Deliberately do not wait for completeStartup's session-mapping entry
+		// (as the other recall test does) — session_start resolving does not
+		// mean startup (git session-key resolution, peer/session setup) has
+		// finished. The context handler must wait for it itself rather than
+		// racing it and silently skipping recall.
+		await sessionStart({ reason: "startup" }, context);
+		const beforeAgentStart = pi.handlers.get("before_agent_start") as (
+			event: { prompt: string },
+			ctx: ExtensionContext,
+		) => void;
+		const contextHandler = pi.handlers.get("context") as (
+			event: { messages: unknown[] },
+			ctx: ExtensionContext,
+		) => Promise<{ messages: Array<{ content: string }> } | undefined>;
+		beforeAgentStart({ prompt: "Update my server cluster" }, context);
+		const injected = await contextHandler({ messages: [] }, context);
+		assert.equal(injected?.messages.length, 1);
+		assert.match(
+			injected?.messages[0]?.content ?? "",
+			/The cluster runs on us-east-1\./,
+		);
+		assert.equal(chatCalls.length, 1);
+	} finally {
+		await sessionShutdown({}, context);
+		sessionManager.listAll = listAll;
+		restoreEnvironment("HONCHO_API_KEY", previous.HONCHO_API_KEY);
+		restoreEnvironment("HONCHO_ENABLED", previous.HONCHO_ENABLED);
+		restoreEnvironment("PI_SUBAGENT_ID", previous.PI_SUBAGENT_ID);
+	}
+});
+
+test("a failed honcho_chat query surfaces a warning instead of failing silently", async () => {
+	const previous = Object.fromEntries(
+		["HONCHO_API_KEY", "HONCHO_ENABLED", "PI_SUBAGENT_ID"].map((name) => [
+			name,
+			process.env[name],
+		]),
+	);
+	process.env.HONCHO_API_KEY = "test-key";
+	delete process.env.HONCHO_ENABLED;
+	delete process.env.PI_SUBAGENT_ID;
+	const client = {
+		checkConnection: async () => undefined,
+		fetchCachedMemory: async () => ({}),
+		deliverExchange: async () => [],
+		reconcileOperationId: async () => [],
+		cloneSession: async () => "cloned-session",
+		search: async () => [],
+		chat: async () => {
+			throw new Error("network down");
+		},
+		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
+		deleteSession: async () => undefined,
+		deleteConclusion: async () => undefined,
+		inspectWorkspace: async () => ({
+			workspaceId: "pi",
+			peerIds: [],
+			sessionCount: 0,
+			conclusionCount: 0,
+		}),
+		deleteWorkspace: async () => undefined,
+	};
+	const sessionManager = SessionManager as unknown as {
+		listAll: () => Promise<Array<{ path: string }>>;
+	};
+	const listAll = sessionManager.listAll;
+	sessionManager.listAll = async () => [];
+	const statuses: string[] = [];
+	const notifications: Array<{ message: string; level: string }> = [];
+	const context = {
+		...startupContext(),
+		getContextUsage: () => undefined,
+		ui: {
+			setStatus: (_key: string, value: string) => statuses.push(value),
+			notify: (message: string, level: string) =>
+				notifications.push({ message, level }),
+		},
+	} as unknown as ExtensionContext;
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI, () => client);
+	const sessionStart = pi.handlers.get("session_start") as (
+		event: { reason: "startup" },
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	const sessionShutdown = pi.handlers.get("session_shutdown") as (
+		event: unknown,
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	try {
+		await sessionStart({ reason: "startup" }, context);
+		const beforeAgentStart = pi.handlers.get("before_agent_start") as (
+			event: { prompt: string },
+			ctx: ExtensionContext,
+		) => void;
+		const contextHandler = pi.handlers.get("context") as (
+			event: { messages: unknown[] },
+			ctx: ExtensionContext,
+		) => Promise<{ messages: unknown[] } | undefined>;
+		beforeAgentStart({ prompt: "Update my server cluster" }, context);
+		const injected = await contextHandler({ messages: [] }, context);
+		assert.equal(injected, undefined);
+		assert.match(notifications[0]?.message ?? "", /Honcho recall failed/);
+		assert.equal(notifications[0]?.level, "warning");
+		assert.ok(statuses.some((status) => /querying/.test(status)));
+		assert.doesNotMatch(statuses.at(-1) ?? "", /querying/);
+	} finally {
+		await sessionShutdown({}, context);
+		sessionManager.listAll = listAll;
+		restoreEnvironment("HONCHO_API_KEY", previous.HONCHO_API_KEY);
+		restoreEnvironment("HONCHO_ENABLED", previous.HONCHO_ENABLED);
+		restoreEnvironment("PI_SUBAGENT_ID", previous.PI_SUBAGENT_ID);
+	}
+});
+
+test("honcho_search waits for in-flight startup instead of reporting unavailable", async () => {
+	const previous = Object.fromEntries(
+		["HONCHO_API_KEY", "HONCHO_ENABLED", "PI_SUBAGENT_ID"].map((name) => [
+			name,
+			process.env[name],
+		]),
+	);
+	process.env.HONCHO_API_KEY = "test-key";
+	delete process.env.HONCHO_ENABLED;
+	delete process.env.PI_SUBAGENT_ID;
+	const searchCalls: Array<{ sessionId: string; query: string }> = [];
+	const client = {
+		checkConnection: async () => undefined,
+		fetchCachedMemory: async () => ({}),
+		deliverExchange: async () => [],
+		reconcileOperationId: async () => [],
+		cloneSession: async () => "cloned-session",
+		search: async (sessionId: string, query: string) => {
+			searchCalls.push({ sessionId, query });
+			return ["found: cluster config"];
+		},
+		chat: async () => undefined,
+		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
+		deleteSession: async () => undefined,
+		deleteConclusion: async () => undefined,
+		inspectWorkspace: async () => ({
+			workspaceId: "pi",
+			peerIds: [],
+			sessionCount: 0,
+			conclusionCount: 0,
+		}),
+		deleteWorkspace: async () => undefined,
+	};
+	const sessionManager = SessionManager as unknown as {
+		listAll: () => Promise<Array<{ path: string }>>;
+	};
+	const listAll = sessionManager.listAll;
+	sessionManager.listAll = async () => [];
+	const context = startupContext();
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI, () => client);
+	const sessionStart = pi.handlers.get("session_start") as (
+		event: { reason: "startup" },
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	const sessionShutdown = pi.handlers.get("session_shutdown") as (
+		event: unknown,
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	try {
+		// As above: call the tool immediately, without waiting for startup to
+		// settle, to prove it waits rather than throwing "unavailable".
+		await sessionStart({ reason: "startup" }, context);
+		const search = pi.tools.get("honcho_search");
+		assert.ok(search);
+		const result = await search.execute("tool-1", { query: "server cluster" });
+		assert.match(result.content[0]?.text ?? "", /found: cluster config/);
+		assert.equal(searchCalls.length, 1);
+	} finally {
+		await sessionShutdown({}, context);
+		sessionManager.listAll = listAll;
+		restoreEnvironment("HONCHO_API_KEY", previous.HONCHO_API_KEY);
+		restoreEnvironment("HONCHO_ENABLED", previous.HONCHO_ENABLED);
+		restoreEnvironment("PI_SUBAGENT_ID", previous.PI_SUBAGENT_ID);
+	}
+});
+
 test("setup trims stable identities before saving them", async () => {
 	const registry = await loadHonchoRegistry();
 	assert.ok(registry);
@@ -266,6 +598,7 @@ test("setup trims stable identities before saving them", async () => {
 					if (label === "Pi peer") return " pi ";
 					return " 1 ";
 				},
+				select: async () => "minimal",
 				confirm: async () => true,
 				notify: () => undefined,
 				setStatus: () => undefined,
@@ -301,6 +634,7 @@ test("setup saves a valid context injection cadence to the Honcho config file", 
 					if (label === "Pi peer") return "pi";
 					return " 5 ";
 				},
+				select: async () => "minimal",
 				confirm: async () => true,
 				notify: () => undefined,
 				setStatus: () => undefined,
@@ -322,6 +656,81 @@ test("setup saves a valid context injection cadence to the Honcho config file", 
 		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
 		else process.env.USERPROFILE = previousUserProfile;
 		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("setup saves a chosen reasoning level to the Honcho config file", async () => {
+	const registry = await loadHonchoRegistry();
+	assert.ok(registry);
+	const root = await mkdtemp(join(tmpdir(), "pi-honcho-setup-reasoning-"));
+	const previousHome = process.env.HOME;
+	const previousUserProfile = process.env.USERPROFILE;
+	process.env.HOME = root;
+	process.env.USERPROFILE = root;
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI);
+	const setup = pi.commands.get("honcho-setup")?.handler;
+	assert.ok(setup);
+	try {
+		await setup("", {
+			...startupContext(),
+			ui: {
+				input: async (label: string) => {
+					if (label === "Stable user peer") return "user";
+					if (label === "Pi peer") return "pi";
+					return "1";
+				},
+				select: async () => "high",
+				confirm: async () => true,
+				notify: () => undefined,
+				setStatus: () => undefined,
+			},
+		} as unknown as ExtensionContext);
+		const saved = await loadHonchoConfigFile();
+		assert.equal(
+			(saved as { hosts?: { "pi-honcho"?: { reasoningLevel?: string } } })
+				.hosts?.["pi-honcho"]?.reasoningLevel,
+			"high",
+		);
+	} finally {
+		await saveHonchoRegistry(registry);
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousUserProfile;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("setup rejects an invalid reasoning level without saving identity or cadence changes", async () => {
+	const registry = await loadHonchoRegistry();
+	assert.ok(registry);
+	const notifications: Array<{ message: string; level: string }> = [];
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI);
+	const setup = pi.commands.get("honcho-setup")?.handler;
+	assert.ok(setup);
+	try {
+		await setup("", {
+			...startupContext(),
+			ui: {
+				input: async (label: string) => {
+					if (label === "Stable user peer") return "changed-user";
+					if (label === "Pi peer") return "changed-pi";
+					return "1";
+				},
+				select: async () => "extreme",
+				confirm: async () => true,
+				notify: (message: string, level: string) =>
+					notifications.push({ message, level }),
+				setStatus: () => undefined,
+			},
+		} as unknown as ExtensionContext);
+		assert.deepEqual((await loadHonchoRegistry())?.identity, registry?.identity);
+		assert.match(notifications[0]?.message ?? "", /Reasoning level must be one of/);
+		assert.equal(notifications[0]?.level, "warning");
+	} finally {
+		await saveHonchoRegistry(registry);
 	}
 });
 
@@ -350,6 +759,87 @@ test("setup rejects an invalid context injection cadence without saving identity
 		} as unknown as ExtensionContext);
 		assert.deepEqual((await loadHonchoRegistry())?.identity, registry?.identity);
 		assert.match(notifications[0]?.message ?? "", /whole number of turns/);
+		assert.equal(notifications[0]?.level, "warning");
+	} finally {
+		await saveHonchoRegistry(registry);
+	}
+});
+
+test("setup saves a chosen request timeout to the Honcho config file", async () => {
+	const registry = await loadHonchoRegistry();
+	assert.ok(registry);
+	const root = await mkdtemp(join(tmpdir(), "pi-honcho-setup-timeout-"));
+	const previousHome = process.env.HOME;
+	const previousUserProfile = process.env.USERPROFILE;
+	process.env.HOME = root;
+	process.env.USERPROFILE = root;
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI);
+	const setup = pi.commands.get("honcho-setup")?.handler;
+	assert.ok(setup);
+	try {
+		await setup("", {
+			...startupContext(),
+			ui: {
+				input: async (label: string) => {
+					if (label === "Stable user peer") return "user";
+					if (label === "Pi peer") return "pi";
+					if (label.startsWith("Honcho request timeout")) return "45000";
+					return "1";
+				},
+				select: async () => "minimal",
+				confirm: async () => true,
+				notify: () => undefined,
+				setStatus: () => undefined,
+			},
+		} as unknown as ExtensionContext);
+		const saved = await loadHonchoConfigFile();
+		assert.equal(
+			(saved as { hosts?: { "pi-honcho"?: { timeoutMs?: number } } }).hosts?.[
+				"pi-honcho"
+			]?.timeoutMs,
+			45_000,
+		);
+	} finally {
+		await saveHonchoRegistry(registry);
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousUserProfile;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("setup rejects an invalid request timeout without saving identity, cadence, or reasoning level changes", async () => {
+	const registry = await loadHonchoRegistry();
+	assert.ok(registry);
+	const notifications: Array<{ message: string; level: string }> = [];
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI);
+	const setup = pi.commands.get("honcho-setup")?.handler;
+	assert.ok(setup);
+	try {
+		await setup("", {
+			...startupContext(),
+			ui: {
+				input: async (label: string) => {
+					if (label === "Stable user peer") return "changed-user";
+					if (label === "Pi peer") return "changed-pi";
+					if (label.startsWith("Honcho request timeout")) return "not-a-number";
+					return "1";
+				},
+				select: async () => "minimal",
+				confirm: async () => true,
+				notify: (message: string, level: string) =>
+					notifications.push({ message, level }),
+				setStatus: () => undefined,
+			},
+		} as unknown as ExtensionContext);
+		assert.deepEqual((await loadHonchoRegistry())?.identity, registry?.identity);
+		assert.match(
+			notifications[0]?.message ?? "",
+			/whole number of milliseconds/,
+		);
 		assert.equal(notifications[0]?.level, "warning");
 	} finally {
 		await saveHonchoRegistry(registry);

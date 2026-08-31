@@ -13,8 +13,11 @@ import { dirname, join } from "node:path";
 import { promisify } from "node:util";
 import {
 	HONCHO_HOST_NAME,
+	type HonchoReasoningLevel,
 	isValidContextCadenceTurns,
 	isValidHonchoWorkspaceId,
+	isValidReasoningLevel,
+	isValidTimeoutMs,
 } from "./config.js";
 import type { OAuthTokens } from "./oauth.js";
 import {
@@ -255,6 +258,50 @@ export async function saveHonchoContextCadence(
 				[HONCHO_HOST_NAME]: {
 					...host,
 					contextCadence: contextCadenceTurns,
+				},
+			},
+		};
+		return writeJsonAtomically(configPath(), next);
+	} catch {
+		return false;
+	}
+}
+
+/** Persists the dialectic reasoning level for honcho_chat queries, leaving credentials and identity untouched. */
+export async function saveHonchoReasoningLevel(
+	reasoningLevel: HonchoReasoningLevel,
+): Promise<boolean> {
+	if (!isValidReasoningLevel(reasoningLevel)) return false;
+	try {
+		const { config, hosts, host } = await currentHonchoHostSettings();
+		const next = {
+			...config,
+			hosts: {
+				...hosts,
+				[HONCHO_HOST_NAME]: {
+					...host,
+					reasoningLevel,
+				},
+			},
+		};
+		return writeJsonAtomically(configPath(), next);
+	} catch {
+		return false;
+	}
+}
+
+/** Persists the request timeout (ms) for blocking Honcho calls, leaving credentials and identity untouched. */
+export async function saveHonchoTimeoutMs(timeoutMs: number): Promise<boolean> {
+	if (!isValidTimeoutMs(timeoutMs)) return false;
+	try {
+		const { config, hosts, host } = await currentHonchoHostSettings();
+		const next = {
+			...config,
+			hosts: {
+				...hosts,
+				[HONCHO_HOST_NAME]: {
+					...host,
+					timeoutMs,
 				},
 			},
 		};

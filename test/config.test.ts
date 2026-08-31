@@ -7,7 +7,9 @@ import test from "node:test";
 import { resolveHonchoConfig } from "../src/remote/config.js";
 import {
 	saveHonchoContextCadence,
+	saveHonchoReasoningLevel,
 	saveHonchoSettings,
+	saveHonchoTimeoutMs,
 } from "../src/remote/config-file.js";
 
 test("environment values override the isolated Honcho host block", () => {
@@ -22,6 +24,7 @@ test("environment values override the isolated Honcho host block", () => {
 			HONCHO_MAX_MESSAGE_LENGTH: "1234",
 			HONCHO_CONTEXT_CADENCE: "5",
 			HONCHO_REASONING_LEVEL: "high",
+			HONCHO_TIMEOUT_MS: "9000",
 		},
 		{
 			hosts: {
@@ -44,7 +47,7 @@ test("environment values override the isolated Honcho host block", () => {
 		workspaceSource: "environment",
 		peerName: "env-user",
 		aiPeer: "pi",
-		timeoutMs: 3_000,
+		timeoutMs: 9_000,
 		maxMessageLength: 1_234,
 		contextCadenceTurns: 5,
 		reasoningLevel: "high",
@@ -145,6 +148,45 @@ test("an invalid reasoning level from any source falls back to the default", () 
 		if (result.kind !== "configured") continue;
 		assert.equal(result.config.reasoningLevel, "minimal");
 	}
+});
+
+test("the request timeout defaults to 20 seconds when unset", () => {
+	const result = resolveHonchoConfig({ HONCHO_API_KEY: "environment-key" }, {});
+	assert.equal(result.kind, "configured");
+	if (result.kind !== "configured") return;
+	assert.equal(result.config.timeoutMs, 20_000);
+});
+
+test("a non-positive or invalid request timeout falls back to the default", () => {
+	for (const value of ["0", "-3", "not-a-number", ""]) {
+		const result = resolveHonchoConfig(
+			{ HONCHO_API_KEY: "environment-key", HONCHO_TIMEOUT_MS: value },
+			{},
+		);
+		assert.equal(result.kind, "configured");
+		if (result.kind !== "configured") continue;
+		assert.equal(result.config.timeoutMs, 20_000);
+	}
+});
+
+test("a request timeout saved to the Honcho config file is honored without an environment variable", () => {
+	const result = resolveHonchoConfig(
+		{ HONCHO_API_KEY: "environment-key" },
+		{ hosts: { "pi-honcho": { timeoutMs: 12_000 } } },
+	);
+	assert.equal(result.kind, "configured");
+	if (result.kind !== "configured") return;
+	assert.equal(result.config.timeoutMs, 12_000);
+});
+
+test("an environment request timeout overrides the value saved to the Honcho config file", () => {
+	const result = resolveHonchoConfig(
+		{ HONCHO_API_KEY: "environment-key", HONCHO_TIMEOUT_MS: "7000" },
+		{ hosts: { "pi-honcho": { timeoutMs: 12_000 } } },
+	);
+	assert.equal(result.kind, "configured");
+	if (result.kind !== "configured") return;
+	assert.equal(result.config.timeoutMs, 7_000);
 });
 
 test("primary host settings override legacy fields and inherit missing values", () => {
@@ -531,6 +573,119 @@ test("saving a context cadence preserves credentials and identity already on the
 		assert.equal(await saveHonchoContextCadence(0), false);
 		assert.equal(await saveHonchoContextCadence(-1), false);
 		assert.equal(await saveHonchoContextCadence(1.5), false);
+		assert.deepEqual(JSON.parse(await readFile(path, "utf8")), saved);
+	} finally {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousUserProfile;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("saving a reasoning level preserves credentials and identity already on the host block", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-honcho-config-"));
+	const previousHome = process.env.HOME;
+	const previousUserProfile = process.env.USERPROFILE;
+	process.env.HOME = root;
+	process.env.USERPROFILE = root;
+
+	try {
+		const path = join(root, ".honcho", "config.json");
+		await mkdir(join(root, ".honcho"), { recursive: true });
+		await writeFile(
+			path,
+			`${JSON.stringify(
+				{
+					hosts: {
+						"pi-honcho": {
+							apiKey: "cli-key",
+							workspaceId: "setup-workspace",
+							peerName: "setup-user",
+							aiPeer: "setup-ai",
+						},
+					},
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		assert.equal(await saveHonchoReasoningLevel("high"), true);
+
+		const saved = JSON.parse(await readFile(path, "utf8")) as {
+			hosts?: Record<string, Record<string, unknown>>;
+		};
+		assert.deepEqual(saved.hosts?.["pi-honcho"], {
+			apiKey: "cli-key",
+			workspaceId: "setup-workspace",
+			peerName: "setup-user",
+			aiPeer: "setup-ai",
+			reasoningLevel: "high",
+		});
+
+		assert.equal(
+			await saveHonchoReasoningLevel(
+				"extreme" as unknown as Parameters<typeof saveHonchoReasoningLevel>[0],
+			),
+			false,
+		);
+		assert.deepEqual(JSON.parse(await readFile(path, "utf8")), saved);
+	} finally {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousUserProfile;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("saving a request timeout preserves credentials and identity already on the host block", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-honcho-config-"));
+	const previousHome = process.env.HOME;
+	const previousUserProfile = process.env.USERPROFILE;
+	process.env.HOME = root;
+	process.env.USERPROFILE = root;
+
+	try {
+		const path = join(root, ".honcho", "config.json");
+		await mkdir(join(root, ".honcho"), { recursive: true });
+		await writeFile(
+			path,
+			`${JSON.stringify(
+				{
+					hosts: {
+						"pi-honcho": {
+							apiKey: "cli-key",
+							workspaceId: "setup-workspace",
+							peerName: "setup-user",
+							aiPeer: "setup-ai",
+						},
+					},
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+
+		assert.equal(await saveHonchoTimeoutMs(15_000), true);
+
+		const saved = JSON.parse(await readFile(path, "utf8")) as {
+			hosts?: Record<string, Record<string, unknown>>;
+		};
+		assert.deepEqual(saved.hosts?.["pi-honcho"], {
+			apiKey: "cli-key",
+			workspaceId: "setup-workspace",
+			peerName: "setup-user",
+			aiPeer: "setup-ai",
+			timeoutMs: 15_000,
+		});
+
+		assert.equal(await saveHonchoTimeoutMs(0), false);
+		assert.equal(await saveHonchoTimeoutMs(-1), false);
+		assert.equal(await saveHonchoTimeoutMs(1.5), false);
 		assert.deepEqual(JSON.parse(await readFile(path, "utf8")), saved);
 	} finally {
 		if (previousHome === undefined) delete process.env.HOME;

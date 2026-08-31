@@ -51,3 +51,17 @@ test("formats the configured context injection cadence", () => {
 		"Honcho: connected\nContext cadence: every 4 turns",
 	);
 });
+
+test("formats the configured reasoning level", () => {
+	assert.equal(
+		formatStatusDetails({ state: "connected", reasoningLevel: "minimal" }),
+		"Honcho: connected\nReasoning level: minimal",
+	);
+});
+
+test("formats the configured request timeout", () => {
+	assert.equal(
+		formatStatusDetails({ state: "connected", timeoutMs: 20_000 }),
+		"Honcho: connected\nQuery timeout: 20000ms",
+	);
+});

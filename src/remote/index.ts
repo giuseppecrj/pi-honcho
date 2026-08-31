@@ -18,10 +18,16 @@ import {
 } from "./command-namespace.js";
 import {
 	DEFAULT_CONTEXT_CADENCE_TURNS,
+	DEFAULT_HONCHO_REASONING_LEVEL,
+	DEFAULT_TIMEOUT_MS,
+	HONCHO_REASONING_LEVELS,
 	type HonchoConfiguration,
 	type HonchoConnectionConfig,
+	type HonchoReasoningLevel,
 	isValidContextCadenceTurns,
 	isValidHonchoWorkspaceId,
+	isValidReasoningLevel,
+	isValidTimeoutMs,
 	resolveHonchoBaseUrl,
 	resolveHonchoConfig,
 } from "./config.js";
@@ -31,7 +37,9 @@ import {
 	repositoryOrigin,
 	saveHonchoContextCadence,
 	saveHonchoOAuthTokens,
+	saveHonchoReasoningLevel,
 	saveHonchoRegistry,
+	saveHonchoTimeoutMs,
 } from "./config-file.js";
 import {
 	ExchangeDeliveryQueue,
@@ -93,7 +101,22 @@ import {
 
 const STATUS_KEY = "pi-honcho";
 const FLUSH_TIMEOUT_MS = 2_000;
+/** Bounds how long a turn waits for in-flight startup (session/peer setup) before giving up on live recall for that turn. */
+const STARTUP_AWAIT_TIMEOUT_MS = 5_000;
 const inMemoryForkHandoffs = new InMemoryForkHandoffs();
+
+function raceTimeout(promise: Promise<void>, timeoutMs: number): Promise<void> {
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	return Promise.race([
+		promise,
+		new Promise<void>((resolve) => {
+			timeout = setTimeout(resolve, timeoutMs);
+			timeout.unref?.();
+		}),
+	]).finally(() => {
+		if (timeout) clearTimeout(timeout);
+	});
+}
 
 async function persistedResetRecovery(
 	workspaceId: string,
@@ -381,6 +404,12 @@ function startupStatusDetails(startup: StartupConfiguration): StatusDetails {
 			configured.kind === "configured"
 				? configured.config.contextCadenceTurns
 				: undefined,
+		reasoningLevel:
+			configured.kind === "configured"
+				? configured.config.reasoningLevel
+				: undefined,
+		timeoutMs:
+			configured.kind === "configured" ? configured.config.timeoutMs : undefined,
 	};
 }
 
@@ -426,6 +455,8 @@ export default function honchoMemory(
 	let forkClient: HonchoForkClient | undefined;
 	let toolClient: HonchoToolClient | undefined;
 	let remoteSessionId: string | undefined;
+	/** Resolves once completeStartup has set (or failed to set) toolClient/remoteSessionId for the current generation. */
+	let startupCompletion: Promise<void> | undefined;
 	let memoryGeneration = 0;
 	let submittedPrompt: string | undefined;
 	let entryIdsBeforeRun = new Set<string>();
@@ -434,6 +465,8 @@ export default function honchoMemory(
 	let privacyDisabled = false;
 	let statusDetails: StatusDetails = { state: "unconfigured" };
 	let contextCadenceTurns = DEFAULT_CONTEXT_CADENCE_TURNS;
+	let reasoningLevel: HonchoReasoningLevel = DEFAULT_HONCHO_REASONING_LEVEL;
+	let timeoutMs = DEFAULT_TIMEOUT_MS;
 	let turnIndex = 0;
 	let lastInjectedTurn = 0;
 	/** The last live honcho_chat answer injected, so the next query can ask Honcho not to repeat it. */
@@ -527,17 +560,23 @@ export default function honchoMemory(
 		forkClient = undefined;
 		toolClient = undefined;
 		remoteSessionId = undefined;
+		startupCompletion = undefined;
 		resetBlocked = false;
 		awaitingRemoteRecreation = false;
 		contextCadenceTurns = DEFAULT_CONTEXT_CADENCE_TURNS;
+		reasoningLevel = DEFAULT_HONCHO_REASONING_LEVEL;
+		timeoutMs = DEFAULT_TIMEOUT_MS;
 		turnIndex = 0;
 		lastInjectedTurn = 0;
 		lastHonchoChatResponse = undefined;
 
 		const startup = await resolveStartupConfiguration(ctx);
 		if (!isCurrentStartup(generation)) return staleStartupStatus();
-		if (startup.configuration.kind === "configured")
+		if (startup.configuration.kind === "configured") {
 			contextCadenceTurns = startup.configuration.config.contextCadenceTurns;
+			reasoningLevel = startup.configuration.config.reasoningLevel;
+			timeoutMs = startup.configuration.config.timeoutMs;
+		}
 		const memoryClient = createStartupClient(
 			startup.configuration,
 			createLifecycleClient,
@@ -582,7 +621,7 @@ export default function honchoMemory(
 			return statusController.current;
 		}
 
-		void completeStartup(
+		startupCompletion = completeStartup(
 			ctx,
 			memoryClient,
 			recovery,
@@ -674,26 +713,32 @@ export default function honchoMemory(
 		// if (!memory) return;
 		const prompt = submittedPrompt;
 		if (!prompt) return;
-		const available = availableToolClient();
+		const tokenBudget = contextBudget(ctx.getContextUsage()?.percent);
+		if (tokenBudget === 0) return;
+		const available = await availableToolClient();
 		if (!available) return;
 		const query = buildLiveContextQuery(
 			recentExchanges(ctx.sessionManager.getBranch(), contextCadenceTurns),
 			prompt,
 			lastHonchoChatResponse,
+			tokenBudget,
 		);
 		let response: string | undefined;
+		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, "Honcho: querying…");
 		try {
 			response = await available.client.chat(available.sessionId, query);
 		} catch {
+			if (ctx.hasUI)
+				ctx.ui.notify("Honcho recall failed for this turn.", "warning");
 			return;
+		} finally {
+			if (ctx.hasUI && controller)
+				showStatus(ctx, controller.current, statusDetails.workspaceId ?? "");
 		}
 		if (!response || isNullResponse(response)) return;
 		lastInjectedTurn = turnIndex;
 		lastHonchoChatResponse = response;
-		const memory = formatLiveContext(
-			response,
-			contextBudget(ctx.getContextUsage()?.percent),
-		);
+		const memory = formatLiveContext(response, tokenBudget);
 		if (!memory) return;
 		return {
 			messages: [
@@ -787,9 +832,16 @@ export default function honchoMemory(
 		pi.setActiveTools(enabled ? [...active, ...honchoToolNames] : active);
 	}
 
-	function availableToolClient():
-		| { client: HonchoToolClient; sessionId: string }
-		| undefined {
+	/**
+	 * Waits for in-flight startup (session/peer setup) before reporting
+	 * availability, so a Honcho query that races the tail end of startup
+	 * blocks for the real result instead of silently reporting unavailable.
+	 */
+	async function availableToolClient(): Promise<
+		{ client: HonchoToolClient; sessionId: string } | undefined
+	> {
+		if (startupCompletion)
+			await raceTimeout(startupCompletion, STARTUP_AWAIT_TIMEOUT_MS);
 		return toolClient && remoteSessionId
 			? { client: toolClient, sessionId: remoteSessionId }
 			: undefined;
@@ -813,7 +865,7 @@ export default function honchoMemory(
 		description: "Search bounded remote project memory when it is connected.",
 		parameters: Type.Object({ query: Type.String({ minLength: 1 }) }),
 		async execute(_id, { query }) {
-			const available = availableToolClient();
+			const available = await availableToolClient();
 			if (!available) throw new Error("Honcho memory is unavailable");
 			const results = await available.client.search(available.sessionId, query);
 			return {
@@ -828,7 +880,7 @@ export default function honchoMemory(
 		description: "Ask a bounded question about connected remote memory.",
 		parameters: Type.Object({ query: Type.String({ minLength: 1 }) }),
 		async execute(_id, { query }) {
-			const available = availableToolClient();
+			const available = await availableToolClient();
 			if (!available) throw new Error("Honcho memory is unavailable");
 			const response = await available.client.chat(available.sessionId, query);
 			return {
@@ -849,7 +901,7 @@ export default function honchoMemory(
 			"Save a durable preference or correction only when the user explicitly requested it.",
 		parameters: Type.Object({ content: Type.String({ minLength: 1 }) }),
 		async execute(_id, { content }) {
-			const available = availableToolClient();
+			const available = await availableToolClient();
 			if (!available) throw new Error("Honcho memory is unavailable");
 			const conclusionId = await available.client.remember(
 				available.sessionId,
@@ -1035,6 +1087,31 @@ export default function honchoMemory(
 			);
 			return;
 		}
+		const nextReasoningLevel = await ctx.ui.select(
+			"Honcho reasoning level (speed vs. depth for honcho_chat queries)",
+			[...HONCHO_REASONING_LEVELS],
+		);
+		if (nextReasoningLevel === undefined) return;
+		if (!isValidReasoningLevel(nextReasoningLevel)) {
+			ctx.ui.notify(
+				`Reasoning level must be one of: ${HONCHO_REASONING_LEVELS.join(", ")}.`,
+				"warning",
+			);
+			return;
+		}
+		const timeoutInput = await ctx.ui.input(
+			"Honcho request timeout in milliseconds (bounds each blocking call, including live recall)",
+			String(timeoutMs),
+		);
+		if (timeoutInput === undefined) return;
+		const nextTimeoutMs = Number.parseInt(timeoutInput.trim(), 10);
+		if (!isValidTimeoutMs(nextTimeoutMs)) {
+			ctx.ui.notify(
+				"Request timeout must be a whole number of milliseconds greater than 0.",
+				"warning",
+			);
+			return;
+		}
 		const identity = { userPeer: nextUserPeer, aiPeer: nextAiPeer };
 		const changed =
 			identity.userPeer !== registry.identity.userPeer ||
@@ -1055,15 +1132,29 @@ export default function honchoMemory(
 		const cadenceSaved = await saveHonchoContextCadence(nextCadence);
 		if (cadenceSaved) contextCadenceTurns = nextCadence;
 		statusDetails.contextCadenceTurns = contextCadenceTurns;
+		const reasoningLevelSaved = await saveHonchoReasoningLevel(
+			nextReasoningLevel,
+		);
+		if (reasoningLevelSaved) reasoningLevel = nextReasoningLevel;
+		statusDetails.reasoningLevel = reasoningLevel;
+		const timeoutSaved = await saveHonchoTimeoutMs(nextTimeoutMs);
+		if (timeoutSaved) timeoutMs = nextTimeoutMs;
+		statusDetails.timeoutMs = timeoutMs;
+		const saves = [
+			{ label: "stable Honcho identities", saved: identitySaved },
+			{ label: "context injection cadence", saved: cadenceSaved },
+			{ label: "reasoning level", saved: reasoningLevelSaved },
+			{ label: "request timeout", saved: timeoutSaved },
+		];
+		const succeeded = saves.filter((save) => save.saved).map((save) => save.label);
+		const failed = saves.filter((save) => !save.saved).map((save) => save.label);
 		ctx.ui.notify(
-			identitySaved && cadenceSaved
-				? "Saved stable Honcho identities and context cadence. Start a fresh conversation."
-				: identitySaved
-					? "Saved stable Honcho identities, but could not save context cadence."
-					: cadenceSaved
-						? "Saved context injection cadence, but could not save Honcho identities."
-						: "Could not save Honcho identities or context cadence.",
-			identitySaved && cadenceSaved ? "info" : "error",
+			failed.length === 0
+				? `Saved ${succeeded.join(", ")}. Start a fresh conversation.`
+				: succeeded.length === 0
+					? `Could not save ${failed.join(", ")}.`
+					: `Saved ${succeeded.join(", ")}, but could not save ${failed.join(", ")}.`,
+			failed.length === 0 ? "info" : "error",
 		);
 	}
 
@@ -1124,7 +1215,7 @@ export default function honchoMemory(
 	});
 
 	async function sessionDeleteCommand(ctx: ExtensionContext): Promise<void> {
-		const available = availableToolClient();
+		const available = await availableToolClient();
 		if (!available || !ctx.hasUI) {
 			if (ctx.hasUI)
 				ctx.ui.notify(
