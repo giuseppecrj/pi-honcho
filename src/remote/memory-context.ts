@@ -5,6 +5,24 @@ export interface CachedMemory {
 	userRepresentation?: string;
 }
 
+/**
+ * The first turn that ever calls this always injects (lastInjectedTurn is
+ * still 0, its untouched initial value). After that, injection is due once
+ * at least `cadenceTurns` turns have passed since the last injection — a
+ * turn can call this more than once (e.g. a multi-step tool loop), but only
+ * the first call for that turn index is due; later calls for the same
+ * turnIndex see turnIndex - lastInjectedTurn === 0 and are not due.
+ */
+export function isContextInjectionDue(
+	turnIndex: number,
+	lastInjectedTurn: number,
+	cadenceTurns: number,
+): boolean {
+	if (turnIndex < 1) return false;
+	if (lastInjectedTurn === 0) return true;
+	return turnIndex - lastInjectedTurn >= cadenceTurns;
+}
+
 export function contextBudget(percent: number | null | undefined): number {
 	if (percent !== null && percent !== undefined) {
 		if (percent > 85) return 0;
@@ -13,7 +31,10 @@ export function contextBudget(percent: number | null | undefined): number {
 	return 800;
 }
 
-function truncateToTokenBudget(content: string, tokenBudget: number): string {
+export function truncateToTokenBudget(
+	content: string,
+	tokenBudget: number,
+): string {
 	let truncated = content;
 	while (
 		truncated.length > 0 &&

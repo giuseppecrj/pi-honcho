@@ -11,6 +11,8 @@ const config = {
 	aiPeer: "pi",
 	timeoutMs: 3_000,
 	maxMessageLength: 8_000,
+	contextCadenceTurns: 1,
+	reasoningLevel: "minimal" as const,
 };
 
 async function settle(): Promise<void> {

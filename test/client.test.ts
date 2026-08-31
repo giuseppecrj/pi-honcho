@@ -16,6 +16,8 @@ const config: HonchoConnectionConfig = {
 	aiPeer: "pi",
 	timeoutMs: 123,
 	maxMessageLength: 5,
+	contextCadenceTurns: 1,
+	reasoningLevel: "minimal",
 };
 
 type FakeMessage = {
@@ -77,12 +79,12 @@ class FakePeer {
 
 	readonly chatCalls: Array<{
 		query: string;
-		options?: { target?: unknown; session?: unknown };
+		options?: { target?: unknown; session?: unknown; reasoningLevel?: string };
 	}> = [];
 
 	async chat(
 		query: string,
-		options?: { target?: unknown; session?: unknown },
+		options?: { target?: unknown; session?: unknown; reasoningLevel?: string },
 	): Promise<string | null> {
 		this.chatCalls.push({ query, options });
 		return (
@@ -504,11 +506,19 @@ test("maps cached recall, delivery, reconciliation, and tool operations", async 
 	assert.deepEqual(pi.chatCalls, [
 		{
 			query: "unknown",
-			options: { target: fake.peersById.get("user"), session },
+			options: {
+				target: fake.peersById.get("user"),
+				session,
+				reasoningLevel: "minimal",
+			},
 		},
 		{
 			query: "known",
-			options: { target: fake.peersById.get("user"), session },
+			options: {
+				target: fake.peersById.get("user"),
+				session,
+				reasoningLevel: "minimal",
+			},
 		},
 	]);
 	assert.equal(

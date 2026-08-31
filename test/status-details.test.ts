@@ -40,3 +40,28 @@ test("formats non-secret memory identity details", () => {
 		"Honcho: connected\nWorkspace: pi\nUser peer: g\nPi peer: pi\nRepository session: repo-123\nCredentials: Honcho config\nRepository memory: enabled",
 	);
 });
+
+test("formats the configured context injection cadence", () => {
+	assert.equal(
+		formatStatusDetails({ state: "connected", contextCadenceTurns: 1 }),
+		"Honcho: connected\nContext cadence: every 1 turn",
+	);
+	assert.equal(
+		formatStatusDetails({ state: "connected", contextCadenceTurns: 4 }),
+		"Honcho: connected\nContext cadence: every 4 turns",
+	);
+});
+
+test("formats the configured reasoning level", () => {
+	assert.equal(
+		formatStatusDetails({ state: "connected", reasoningLevel: "minimal" }),
+		"Honcho: connected\nReasoning level: minimal",
+	);
+});
+
+test("formats the configured request timeout", () => {
+	assert.equal(
+		formatStatusDetails({ state: "connected", timeoutMs: 20_000 }),
+		"Honcho: connected\nQuery timeout: 20000ms",
+	);
+});
