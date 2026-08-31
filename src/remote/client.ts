@@ -36,7 +36,7 @@ interface HonchoSdkPeer {
 	};
 	chat(
 		query: string,
-		options?: { target?: unknown; session?: unknown },
+		options?: { target?: unknown; session?: unknown; reasoningLevel?: string },
 	): Promise<string | null>;
 	conclusionsOf(target: unknown): HonchoSdkConclusionScope;
 }
@@ -293,7 +293,11 @@ export class SdkHonchoMemoryClient
 
 	async chat(sessionId: string, query: string): Promise<string | undefined> {
 		const { user, pi, session } = await this.openSession(sessionId);
-		const response: unknown = await pi.chat(query, { target: user, session });
+		const response: unknown = await pi.chat(query, {
+			target: user,
+			session,
+			reasoningLevel: this.config.reasoningLevel,
+		});
 		if (response == null || response === "") return undefined;
 		if (typeof response !== "string")
 			throw new Error("Honcho returned a malformed chat response");

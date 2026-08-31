@@ -85,7 +85,7 @@ Pi Honcho uses two remote scopes:
 
 New unmapped Pi conversations use a new opaque `repo-v2-` repository session. Pi histories with a stored remote-session mapping continue to use that mapping. Pi Honcho never automatically searches, merges, or deletes legacy sessions.
 
-At session start, the extension retrieves a cached user representation and project summary. It supplies that memory to the current model call as bounded, untrusted reference material. After a turn completes, it queues the submitted user prompt and completed text assistant response for ordered background delivery.
+On turns due for injection under the configured context cadence (`/honcho setup`, or `HONCHO_CONTEXT_CADENCE`) — the first turn of a session always injects, and later turns wait that many turns between injections — the extension asks Honcho's dialectic endpoint (`peer.chat`) a live, query-scoped question built from the submitted prompt plus the last `cadence + 1` turns of conversation, and blocks that turn on the answer (bounded by the same connection timeout as other Honcho calls). The query runs at the configured reasoning level (`HONCHO_REASONING_LEVEL`, default `minimal` for low latency on this blocking path). If Honcho has nothing relevant, it returns nothing and nothing is injected; otherwise the answer is supplied to the current model call as bounded, untrusted reference material, and remembered so the next query can ask Honcho not to repeat it. The one-time startup snapshot (a cached user representation and project summary fetched once per session) is currently disabled in favor of this per-turn approach. After a turn completes, it queues the submitted user prompt and completed text assistant response for ordered background delivery.
 
 Herdr subagents identified by `PI_SUBAGENT_ID` do not start remote Honcho behavior. They neither recall nor deliver memory, so synthetic assignments cannot affect the user peer. User-controlled top-level conversations, including forks and worktree handoffs, retain automatic memory.
 
@@ -105,7 +105,7 @@ The ledger records are local Pi session entries. Recalled context stays in the r
 | `/honcho status` | Show connection, repository-memory, workspace, peer, and repository-session status. |
 | `/honcho init` | Select or create a workspace and initialize the current trusted repository. |
 | `/honcho login` | Sign in to Honcho in your browser. |
-| `/honcho setup` | Change the stable user and Pi identities. |
+| `/honcho setup` | Change the stable user and Pi identities and the context injection cadence. |
 | `/honcho enable` | Enable memory for an initialized trusted repository. |
 | `/honcho disable` | Immediately stop recall, delivery, clients, and tools for an initialized trusted repository. |
 | `/honcho session delete` | Confirm deletion of the active repository session. |
@@ -155,6 +155,10 @@ A repository is uninitialized until you run `/honcho init` from a trusted projec
 
 Pi uses `user` and `pi` as the default peer IDs. Use `/honcho setup` to change them. Pi confirms an identity change when it affects initialized repositories.
 
+`/honcho setup` also prompts for the context injection cadence and saves it to `~/.honcho/config.json` under `hosts.pi-honcho.contextCadence`, so it persists across sessions without an environment variable. `HONCHO_CONTEXT_CADENCE` still overrides the saved value when set.
+
+The dialectic reasoning level can likewise be saved directly to `~/.honcho/config.json` under `hosts.pi-honcho.reasoningLevel` (one of `minimal`, `low`, `medium`, `high`, `max`); `HONCHO_REASONING_LEVEL` overrides it when set.
+
 Workspace IDs must contain only letters, digits, `_`, and `-`, for example `pi-user_1`. Pi rejects invalid IDs without changing them.
 
 ### Environment variables
@@ -165,6 +169,8 @@ Workspace IDs must contain only letters, digits, `_`, and `-`, for example `pi-u
 | `HONCHO_BASE_URL` | Honcho API endpoint override. | Honcho SDK default. |
 | `HONCHO_ENABLED` | Set to `false` or `0` to disable remote memory. | Enabled for an enabled repository when credentials exist. |
 | `HONCHO_MAX_MESSAGE_LENGTH` | Maximum safe message chunk size. | `8000` |
+| `HONCHO_CONTEXT_CADENCE` | Turns to wait between automatic memory-context injections. The first turn of a session always injects. | `1` (every turn) |
+| `HONCHO_REASONING_LEVEL` | Dialectic reasoning depth for `honcho_chat` queries: `minimal`, `low`, `medium`, `high`, or `max`. Higher levels trade latency for more thorough synthesis. | `minimal` |
 | `PI_CODING_AGENT_DIR` | Pi agent data directory used by local knowledge tools. | `~/.pi/agent` |
 
 Restart or reload Pi after changing API-key credentials or environment configuration. Use `/honcho login` for browser sign-in, and `/honcho init`, `/honcho enable`, and `/honcho disable` to change the repository lifecycle.

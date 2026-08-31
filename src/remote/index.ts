@@ -17,8 +17,10 @@ import {
 	formatHonchoCommandHelp,
 } from "./command-namespace.js";
 import {
+	DEFAULT_CONTEXT_CADENCE_TURNS,
 	type HonchoConfiguration,
 	type HonchoConnectionConfig,
+	isValidContextCadenceTurns,
 	isValidHonchoWorkspaceId,
 	resolveHonchoBaseUrl,
 	resolveHonchoConfig,
@@ -27,6 +29,7 @@ import {
 	loadHonchoConfigFile,
 	loadHonchoRegistry,
 	repositoryOrigin,
+	saveHonchoContextCadence,
 	saveHonchoOAuthTokens,
 	saveHonchoRegistry,
 } from "./config-file.js";
@@ -51,9 +54,16 @@ import {
 	SESSION_MAPPING_KEY,
 } from "./fork.js";
 import {
+	buildLiveContextQuery,
+	formatLiveContext,
+	isNullResponse,
+	type RecentExchange,
+} from "./live-context.js";
+import {
 	type CachedMemory,
 	contextBudget,
 	formatMemoryContext,
+	isContextInjectionDue,
 } from "./memory-context.js";
 import {
 	beginDeviceAuthorization,
@@ -150,6 +160,50 @@ function latestCompletedAssistant(
 		if (text) return { entryId: entry.id, text };
 	}
 	return undefined;
+}
+
+function messageText(
+	content: string | ReadonlyArray<{ type: string; text?: string }>,
+): string {
+	if (typeof content === "string") return content.trim();
+	return content
+		.flatMap((block) =>
+			block.type === "text" && typeof block.text === "string"
+				? [block.text]
+				: [],
+		)
+		.join("")
+		.trim();
+}
+
+/**
+ * The last `count` completed user/assistant exchanges from session history,
+ * oldest first. Tool calls and other entries between a user message and its
+ * final completed assistant response are skipped rather than breaking the
+ * pairing, so multi-step tool loops still produce one exchange per turn.
+ */
+function recentExchanges(
+	entries: readonly SessionEntry[],
+	count: number,
+): RecentExchange[] {
+	if (count <= 0) return [];
+	const exchanges: RecentExchange[] = [];
+	let pendingUserText: string | undefined;
+	for (const entry of entries) {
+		if (entry.type !== "message") continue;
+		const message = entry.message;
+		if (message.role === "user") {
+			pendingUserText = messageText(message.content) || undefined;
+			continue;
+		}
+		if (message.role !== "assistant" || message.stopReason !== "stop") continue;
+		if (!pendingUserText) continue;
+		const assistantText = messageText(message.content);
+		if (assistantText)
+			exchanges.push({ userText: pendingUserText, assistantText });
+		pendingUserText = undefined;
+	}
+	return exchanges.slice(-count);
 }
 
 function describeStatus(status: HonchoMemoryStatus): string {
@@ -323,6 +377,10 @@ function startupStatusDetails(startup: StartupConfiguration): StatusDetails {
 			: "Honcho config",
 		workspaceSource: startup.workspace.workspaceSource,
 		repositoryMemory: startup.workspace.repositoryMemory,
+		contextCadenceTurns:
+			configured.kind === "configured"
+				? configured.config.contextCadenceTurns
+				: undefined,
 	};
 }
 
@@ -375,6 +433,11 @@ export default function honchoMemory(
 	let awaitingRemoteRecreation = false;
 	let privacyDisabled = false;
 	let statusDetails: StatusDetails = { state: "unconfigured" };
+	let contextCadenceTurns = DEFAULT_CONTEXT_CADENCE_TURNS;
+	let turnIndex = 0;
+	let lastInjectedTurn = 0;
+	/** The last live honcho_chat answer injected, so the next query can ask Honcho not to repeat it. */
+	let lastHonchoChatResponse: string | undefined;
 
 	function isCurrentStartup(generation: number): boolean {
 		return generation === memoryGeneration;
@@ -442,8 +505,10 @@ export default function honchoMemory(
 		deliveryQueue = replayStartupDelivery(ctx, client, session, generation);
 		if (!isCurrentStartup(generation)) return;
 		refreshHonchoTools();
-		const memory = await retrieveStartupMemory(client, session);
-		if (isCurrentStartup(generation)) cachedMemory = memory;
+		// The one-time startup memory snapshot is disabled for now in favor of
+		// per-turn, query-driven honcho_chat context — see the "context" handler.
+		// const memory = await retrieveStartupMemory(client, session);
+		// if (isCurrentStartup(generation)) cachedMemory = memory;
 	}
 
 	// This coordinates independent non-blocking connection, replay, and recall work.
@@ -464,9 +529,15 @@ export default function honchoMemory(
 		remoteSessionId = undefined;
 		resetBlocked = false;
 		awaitingRemoteRecreation = false;
+		contextCadenceTurns = DEFAULT_CONTEXT_CADENCE_TURNS;
+		turnIndex = 0;
+		lastInjectedTurn = 0;
+		lastHonchoChatResponse = undefined;
 
 		const startup = await resolveStartupConfiguration(ctx);
 		if (!isCurrentStartup(generation)) return staleStartupStatus();
+		if (startup.configuration.kind === "configured")
+			contextCadenceTurns = startup.configuration.config.contextCadenceTurns;
 		const memoryClient = createStartupClient(
 			startup.configuration,
 			createLifecycleClient,
@@ -553,6 +624,7 @@ export default function honchoMemory(
 		entryIdsBeforeRun = new Set(
 			ctx.sessionManager.getEntries().map((entry) => entry.id),
 		);
+		turnIndex += 1;
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
@@ -587,14 +659,41 @@ export default function honchoMemory(
 		if (deliveryQueue?.enqueue(exchange)) void deliveryQueue.flush();
 	});
 
-	pi.on("context", (event, ctx) => {
+	pi.on("context", async (event, ctx) => {
 		if (privacyDisabled) return;
-		const memory = cachedMemory
-			? formatMemoryContext(
-					cachedMemory,
-					contextBudget(ctx.getContextUsage()?.percent),
-				)
-			: undefined;
+		if (!isContextInjectionDue(turnIndex, lastInjectedTurn, contextCadenceTurns))
+			return;
+		// The static per-turn snapshot injection is disabled for now in favor of
+		// the live, query-driven honcho_chat lookup below.
+		// const memory = cachedMemory
+		// 	? formatMemoryContext(
+		// 			cachedMemory,
+		// 			contextBudget(ctx.getContextUsage()?.percent),
+		// 		)
+		// 	: undefined;
+		// if (!memory) return;
+		const prompt = submittedPrompt;
+		if (!prompt) return;
+		const available = availableToolClient();
+		if (!available) return;
+		const query = buildLiveContextQuery(
+			recentExchanges(ctx.sessionManager.getBranch(), contextCadenceTurns),
+			prompt,
+			lastHonchoChatResponse,
+		);
+		let response: string | undefined;
+		try {
+			response = await available.client.chat(available.sessionId, query);
+		} catch {
+			return;
+		}
+		if (!response || isNullResponse(response)) return;
+		lastInjectedTurn = turnIndex;
+		lastHonchoChatResponse = response;
+		const memory = formatLiveContext(
+			response,
+			contextBudget(ctx.getContextUsage()?.percent),
+		);
 		if (!memory) return;
 		return {
 			messages: [
@@ -923,6 +1022,19 @@ export default function honchoMemory(
 		const nextUserPeer = userPeer?.trim();
 		const nextAiPeer = aiPeer?.trim();
 		if (!nextUserPeer || !nextAiPeer) return;
+		const cadenceInput = await ctx.ui.input(
+			"Context injection cadence (turns between automatic memory recall)",
+			String(contextCadenceTurns),
+		);
+		if (cadenceInput === undefined) return;
+		const nextCadence = Number.parseInt(cadenceInput.trim(), 10);
+		if (!isValidContextCadenceTurns(nextCadence)) {
+			ctx.ui.notify(
+				"Context injection cadence must be a whole number of turns greater than 0.",
+				"warning",
+			);
+			return;
+		}
 		const identity = { userPeer: nextUserPeer, aiPeer: nextAiPeer };
 		const changed =
 			identity.userPeer !== registry.identity.userPeer ||
@@ -936,15 +1048,22 @@ export default function honchoMemory(
 			))
 		)
 			return;
-		const saved = await saveHonchoRegistry({
+		const identitySaved = await saveHonchoRegistry({
 			...registry,
 			identity,
 		});
+		const cadenceSaved = await saveHonchoContextCadence(nextCadence);
+		if (cadenceSaved) contextCadenceTurns = nextCadence;
+		statusDetails.contextCadenceTurns = contextCadenceTurns;
 		ctx.ui.notify(
-			saved
-				? "Saved stable Honcho identities. Start a fresh conversation."
-				: "Could not save Honcho identities.",
-			saved ? "info" : "error",
+			identitySaved && cadenceSaved
+				? "Saved stable Honcho identities and context cadence. Start a fresh conversation."
+				: identitySaved
+					? "Saved stable Honcho identities, but could not save context cadence."
+					: cadenceSaved
+						? "Saved context injection cadence, but could not save Honcho identities."
+						: "Could not save Honcho identities or context cadence.",
+			identitySaved && cadenceSaved ? "info" : "error",
 		);
 	}
 

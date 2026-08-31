@@ -11,7 +11,11 @@ import {
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { promisify } from "node:util";
-import { HONCHO_HOST_NAME, isValidHonchoWorkspaceId } from "./config.js";
+import {
+	HONCHO_HOST_NAME,
+	isValidContextCadenceTurns,
+	isValidHonchoWorkspaceId,
+} from "./config.js";
 import type { OAuthTokens } from "./oauth.js";
 import {
 	discoverProjectHonchoPolicy,
@@ -189,6 +193,28 @@ export async function saveHonchoOAuthTokens(
 	}
 }
 
+async function currentHonchoHostSettings(): Promise<{
+	config: Record<string, unknown>;
+	hosts: Record<string, unknown>;
+	host: Record<string, unknown>;
+}> {
+	const existing = await loadHonchoConfigFile();
+	const config =
+		existing && typeof existing === "object"
+			? (existing as Record<string, unknown>)
+			: {};
+	const hosts =
+		"hosts" in config && config.hosts && typeof config.hosts === "object"
+			? (config.hosts as Record<string, unknown>)
+			: {};
+	const priorHost = hosts[HONCHO_HOST_NAME];
+	const host =
+		priorHost && typeof priorHost === "object"
+			? (priorHost as Record<string, unknown>)
+			: {};
+	return { config, hosts, host };
+}
+
 export async function saveHonchoSettings(settings: {
 	workspaceId: string;
 	peerName?: string;
@@ -196,15 +222,7 @@ export async function saveHonchoSettings(settings: {
 }): Promise<boolean> {
 	if (!isValidHonchoWorkspaceId(settings.workspaceId)) return false;
 	try {
-		const existing = await loadHonchoConfigFile();
-		const config = existing && typeof existing === "object" ? existing : {};
-		const hosts =
-			"hosts" in config && config.hosts && typeof config.hosts === "object"
-				? config.hosts
-				: {};
-		const hostRecord = hosts as Record<string, unknown>;
-		const priorHost = hostRecord[HONCHO_HOST_NAME];
-		const host = priorHost && typeof priorHost === "object" ? priorHost : {};
+		const { config, hosts, host } = await currentHonchoHostSettings();
 		const next = {
 			...config,
 			hosts: {
@@ -214,6 +232,29 @@ export async function saveHonchoSettings(settings: {
 					workspaceId: settings.workspaceId,
 					...(settings.peerName ? { peerName: settings.peerName } : {}),
 					...(settings.aiPeer ? { aiPeer: settings.aiPeer } : {}),
+				},
+			},
+		};
+		return writeJsonAtomically(configPath(), next);
+	} catch {
+		return false;
+	}
+}
+
+/** Persists the turns between automatic memory-context injections, leaving credentials and identity untouched. */
+export async function saveHonchoContextCadence(
+	contextCadenceTurns: number,
+): Promise<boolean> {
+	if (!isValidContextCadenceTurns(contextCadenceTurns)) return false;
+	try {
+		const { config, hosts, host } = await currentHonchoHostSettings();
+		const next = {
+			...config,
+			hosts: {
+				...hosts,
+				[HONCHO_HOST_NAME]: {
+					...host,
+					contextCadence: contextCadenceTurns,
 				},
 			},
 		};

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, rm } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -12,6 +12,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 
 import {
+	loadHonchoConfigFile,
 	loadHonchoRegistry,
 	repositoryOrigin,
 	saveHonchoRegistry,
@@ -142,20 +143,20 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 			data: { remoteSessionId: "legacy-remote-session" },
 		},
 	];
-	let recalledSessionId: string | undefined;
 	const deletedSessionIds: string[] = [];
 	const confirmations: Array<{ title: string; details: string }> = [];
+	const chatCalls: Array<{ sessionId: string; query: string }> = [];
 	const client = {
 		checkConnection: async () => undefined,
-		fetchCachedMemory: async (sessionId: string) => {
-			recalledSessionId = sessionId;
-			return { summary: "recalled session" };
-		},
+		fetchCachedMemory: async () => ({ summary: "recalled session" }),
 		deliverExchange: async () => [],
 		reconcileOperationId: async () => [],
 		cloneSession: async () => "cloned-session",
 		search: async () => [],
-		chat: async () => undefined,
+		chat: async (sessionId: string, query: string) => {
+			chatCalls.push({ sessionId, query });
+			return "The cluster runs on us-east-1.";
+		},
 		remember: async () => "conclusion-1",
 		listWorkspaces: async () => ["pi"],
 		deleteSession: async (sessionId: string) => {
@@ -204,14 +205,32 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 	) => Promise<void>;
 	try {
 		await sessionStart({ reason: "startup" }, context);
-		await waitFor(() => recalledSessionId !== undefined);
-		assert.equal(recalledSessionId, "legacy-remote-session");
-		assert.ok(!recalledSessionId.startsWith("repo-v2-"));
+		await waitFor(() =>
+			pi.entries.some(
+				(entry) =>
+					entry.customType === "pi-honcho-memory.session" &&
+					(entry.data as { remoteSessionId?: string }).remoteSessionId ===
+						"legacy-remote-session",
+			),
+		);
+		const beforeAgentStart = pi.handlers.get("before_agent_start") as (
+			event: { prompt: string },
+			ctx: ExtensionContext,
+		) => void;
 		const contextHandler = pi.handlers.get("context") as (
 			event: { messages: unknown[] },
 			ctx: ExtensionContext,
-		) => { messages: unknown[] } | undefined;
-		assert.equal(contextHandler({ messages: [] }, context)?.messages.length, 1);
+		) => Promise<{ messages: Array<{ content: string }> } | undefined>;
+		beforeAgentStart({ prompt: "Update my server cluster" }, context);
+		const injected = await contextHandler({ messages: [] }, context);
+		assert.equal(injected?.messages.length, 1);
+		assert.match(
+			injected?.messages[0]?.content ?? "",
+			/The cluster runs on us-east-1\./,
+		);
+		assert.equal(chatCalls.length, 1);
+		assert.equal(chatCalls[0]?.sessionId, "legacy-remote-session");
+		assert.match(chatCalls[0]?.query ?? "", /Update my server cluster/);
 		const sessionDelete = pi.commands.get("honcho-session-delete")?.handler;
 		assert.ok(sessionDelete);
 		await sessionDelete("", context);
@@ -221,7 +240,7 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 			confirmations[0]?.details ?? "",
 			/Repository session: legacy-remote-session/,
 		);
-		assert.equal(contextHandler({ messages: [] }, context), undefined);
+		assert.equal(await contextHandler({ messages: [] }, context), undefined);
 	} finally {
 		await sessionShutdown({}, context);
 		sessionManager.listAll = listAll;
@@ -242,8 +261,11 @@ test("setup trims stable identities before saving them", async () => {
 		await setup("", {
 			...startupContext(),
 			ui: {
-				input: async (label: string) =>
-					label === "Stable user peer" ? " user " : " pi ",
+				input: async (label: string) => {
+					if (label === "Stable user peer") return " user ";
+					if (label === "Pi peer") return " pi ";
+					return " 1 ";
+				},
 				confirm: async () => true,
 				notify: () => undefined,
 				setStatus: () => undefined,
@@ -253,6 +275,82 @@ test("setup trims stable identities before saving them", async () => {
 			userPeer: "user",
 			aiPeer: "pi",
 		});
+	} finally {
+		await saveHonchoRegistry(registry);
+	}
+});
+
+test("setup saves a valid context injection cadence to the Honcho config file", async () => {
+	const registry = await loadHonchoRegistry();
+	assert.ok(registry);
+	const root = await mkdtemp(join(tmpdir(), "pi-honcho-setup-cadence-"));
+	const previousHome = process.env.HOME;
+	const previousUserProfile = process.env.USERPROFILE;
+	process.env.HOME = root;
+	process.env.USERPROFILE = root;
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI);
+	const setup = pi.commands.get("honcho-setup")?.handler;
+	assert.ok(setup);
+	try {
+		await setup("", {
+			...startupContext(),
+			ui: {
+				input: async (label: string) => {
+					if (label === "Stable user peer") return "user";
+					if (label === "Pi peer") return "pi";
+					return " 5 ";
+				},
+				confirm: async () => true,
+				notify: () => undefined,
+				setStatus: () => undefined,
+			},
+		} as unknown as ExtensionContext);
+		const saved = await loadHonchoConfigFile();
+		assert.equal(
+			(
+				saved as {
+					hosts?: { "pi-honcho"?: { contextCadence?: number } };
+				}
+			).hosts?.["pi-honcho"]?.contextCadence,
+			5,
+		);
+	} finally {
+		await saveHonchoRegistry(registry);
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousUserProfile;
+		await rm(root, { recursive: true, force: true });
+	}
+});
+
+test("setup rejects an invalid context injection cadence without saving identity changes", async () => {
+	const registry = await loadHonchoRegistry();
+	assert.ok(registry);
+	const notifications: Array<{ message: string; level: string }> = [];
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI);
+	const setup = pi.commands.get("honcho-setup")?.handler;
+	assert.ok(setup);
+	try {
+		await setup("", {
+			...startupContext(),
+			ui: {
+				input: async (label: string) => {
+					if (label === "Stable user peer") return "changed-user";
+					if (label === "Pi peer") return "changed-pi";
+					return "not-a-number";
+				},
+				confirm: async () => true,
+				notify: (message: string, level: string) =>
+					notifications.push({ message, level }),
+				setStatus: () => undefined,
+			},
+		} as unknown as ExtensionContext);
+		assert.deepEqual((await loadHonchoRegistry())?.identity, registry?.identity);
+		assert.match(notifications[0]?.message ?? "", /whole number of turns/);
+		assert.equal(notifications[0]?.level, "warning");
 	} finally {
 		await saveHonchoRegistry(registry);
 	}
@@ -413,13 +511,9 @@ test("uses remote reconciliation only for pending recovery delivery", async () =
 	sessionManager.listAll = async () => [];
 	const reconciled: string[] = [];
 	const delivered: string[] = [];
-	let cachedMemoryRequests = 0;
 	const client = {
 		checkConnection: async () => undefined,
-		fetchCachedMemory: async () => {
-			cachedMemoryRequests += 1;
-			return {};
-		},
+		fetchCachedMemory: async () => ({}),
 		deliverExchange: async (
 			_sessionId: string,
 			exchange: { operationId: string },
@@ -474,14 +568,12 @@ test("uses remote reconciliation only for pending recovery delivery", async () =
 	) => Promise<void>;
 	try {
 		await sessionStart({ reason: "startup" }, context);
-		await waitFor(
-			() =>
-				cachedMemoryRequests === 1 &&
-				pi.entries.some(
-					(entry) =>
-						entry.customType === "pi-honcho-memory.delivery" &&
-						(entry.data as { kind?: string }).kind === "acknowledged",
-				),
+		await waitFor(() =>
+			pi.entries.some(
+				(entry) =>
+					entry.customType === "pi-honcho-memory.delivery" &&
+					(entry.data as { kind?: string }).kind === "acknowledged",
+			),
 		);
 
 		assert.deepEqual(reconciled, ["pi-recovery"]);
