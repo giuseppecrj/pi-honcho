@@ -560,7 +560,6 @@ export default function honchoMemory(
 		forkClient = undefined;
 		toolClient = undefined;
 		remoteSessionId = undefined;
-		startupCompletion = undefined;
 		resetBlocked = false;
 		awaitingRemoteRecreation = false;
 		contextCadenceTurns = DEFAULT_CONTEXT_CADENCE_TURNS;
@@ -569,9 +568,23 @@ export default function honchoMemory(
 		turnIndex = 0;
 		lastInjectedTurn = 0;
 		lastHonchoChatResponse = undefined;
+		// Assigned synchronously, before any await, and settled only once this
+		// generation's client/session are fully resolved - including the
+		// completeStartup tail, when that path is taken - so a turn that races
+		// this call (e.g. the fire-and-forget re-init after remote recreation)
+		// waits for the real result instead of observing neither a client nor a
+		// promise, or resuming before completeStartup has actually set the
+		// client, and skipping recall silently either way.
+		let settleStartupCompletion: () => void = () => {};
+		startupCompletion = new Promise<void>((resolve) => {
+			settleStartupCompletion = resolve;
+		});
 
 		const startup = await resolveStartupConfiguration(ctx);
-		if (!isCurrentStartup(generation)) return staleStartupStatus();
+		if (!isCurrentStartup(generation)) {
+			settleStartupCompletion();
+			return staleStartupStatus();
+		}
 		if (startup.configuration.kind === "configured") {
 			contextCadenceTurns = startup.configuration.config.contextCadenceTurns;
 			reasoningLevel = startup.configuration.config.reasoningLevel;
@@ -599,13 +612,18 @@ export default function honchoMemory(
 		statusController.start();
 		statusDetails = startupStatusDetails(startup);
 		statusDetails.state = describeStatus(statusController.current);
-		if (!memoryClient || startup.configuration.kind !== "configured")
+		if (!memoryClient || startup.configuration.kind !== "configured") {
+			settleStartupCompletion();
 			return statusController.current;
+		}
 
 		const recovery = await persistedResetRecovery(
 			startup.configuration.config.workspaceId,
 		);
-		if (!isCurrentStartup(generation)) return staleStartupStatus();
+		if (!isCurrentStartup(generation)) {
+			settleStartupCompletion();
+			return staleStartupStatus();
+		}
 		resetBlocked = recovery.blocked;
 		awaitingRemoteRecreation =
 			Boolean(recovery.completedAt) && !normalDeliveryOperationId;
@@ -614,14 +632,21 @@ export default function honchoMemory(
 				ctx.cwd,
 				startup.configuration.config.peerName,
 			);
-			if (!isCurrentStartup(generation)) return staleStartupStatus();
+			if (!isCurrentStartup(generation)) {
+				settleStartupCompletion();
+				return staleStartupStatus();
+			}
 			remoteSessionId = repositorySessionId;
 			toolClient = memoryClient;
 			refreshHonchoTools();
+			settleStartupCompletion();
 			return statusController.current;
 		}
 
-		startupCompletion = completeStartup(
+		// startupCompletion stays pending until completeStartup itself finishes
+		// (not just until it's launched), since that's what actually sets
+		// toolClient/remoteSessionId.
+		void completeStartup(
 			ctx,
 			memoryClient,
 			recovery,
@@ -630,17 +655,19 @@ export default function honchoMemory(
 			isFork,
 			forkSourceSessionFile,
 			startup.configuration.config.peerName,
-		).catch(() => {
-			if (!isCurrentStartup(generation)) return;
-			showStatus(
-				ctx,
-				{
-					kind: "retrying",
-					reason: "Unable to refresh memory",
-				},
-				startup.workspace.workspaceId,
-			);
-		});
+		)
+			.catch(() => {
+				if (!isCurrentStartup(generation)) return;
+				showStatus(
+					ctx,
+					{
+						kind: "retrying",
+						reason: "Unable to refresh memory",
+					},
+					startup.workspace.workspaceId,
+				);
+			})
+			.finally(() => settleStartupCompletion());
 		return statusController.current;
 	}
 

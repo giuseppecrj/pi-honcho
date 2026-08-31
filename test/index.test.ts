@@ -1254,6 +1254,124 @@ test("reconciles older post-reset delivery before normally delivering the exchan
 	}
 });
 
+test("a turn that races a fire-and-forget re-init after remote recreation still queries Honcho", async () => {
+	const previous = process.env.HONCHO_API_KEY;
+	const previousWorkspaceId = process.env.HONCHO_WORKSPACE_ID;
+	process.env.HONCHO_API_KEY = "test-key";
+	process.env.HONCHO_WORKSPACE_ID = "pi";
+	const branch: unknown[] = [];
+	const chatCalls: Array<{ sessionId: string; query: string }> = [];
+	const client = {
+		checkConnection: async () => undefined,
+		fetchCachedMemory: async () => ({}),
+		deliverExchange: async (
+			_sessionId: string,
+			exchange: { operationId: string },
+		) => [`remote-${exchange.operationId}`],
+		reconcileOperationId: async () => [],
+		cloneSession: async () => "cloned-session",
+		search: async () => [],
+		chat: async (sessionId: string, query: string) => {
+			chatCalls.push({ sessionId, query });
+			return "The cluster runs on us-east-1.";
+		},
+		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
+		deleteSession: async () => undefined,
+		deleteConclusion: async () => undefined,
+		inspectWorkspace: async () => ({
+			workspaceId: "pi",
+			peerIds: [],
+			sessionCount: 0,
+			conclusionCount: 0,
+		}),
+		deleteWorkspace: async () => undefined,
+	};
+	const context = {
+		...startupContext(),
+		getContextUsage: () => undefined,
+		sessionManager: {
+			getSessionId: () => "pi-session",
+			getEntries: () => branch,
+			getBranch: () => branch,
+		},
+	} as unknown as ExtensionContext;
+	const sessionManager = SessionManager as unknown as {
+		listAll: () => Promise<Array<{ path: string }>>;
+		open: (path: string) => { getEntries: () => unknown[] };
+	};
+	const listAll = sessionManager.listAll;
+	const open = sessionManager.open;
+	sessionManager.listAll = async () => [{ path: "completed-reset" }];
+	sessionManager.open = () => ({
+		getEntries: () => [
+			{
+				type: "custom",
+				customType: "pi-honcho-memory.reset",
+				timestamp: "2026-08-11T00:00:00.000Z",
+				data: { kind: "complete", workspaceId: "pi" },
+			},
+		],
+	});
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI, () => client);
+	const sessionStart = pi.handlers.get("session_start") as (
+		event: { reason: "startup" },
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	const beforeAgentStart = pi.handlers.get("before_agent_start") as (
+		event: { prompt: string },
+		ctx: ExtensionContext,
+	) => void;
+	const agentSettled = pi.handlers.get("agent_settled") as (
+		event: unknown,
+		ctx: ExtensionContext,
+	) => void;
+	const contextHandler = pi.handlers.get("context") as (
+		event: { messages: unknown[] },
+		ctx: ExtensionContext,
+	) => Promise<{ messages: Array<{ content: string }> } | undefined>;
+	const sessionShutdown = pi.handlers.get("session_shutdown") as (
+		event: unknown,
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	try {
+		await sessionStart({ reason: "startup" }, context);
+
+		beforeAgentStart({ prompt: "First post-reset prompt" }, context);
+		branch.push({
+			id: "post-reset-assistant",
+			type: "message",
+			message: {
+				role: "assistant",
+				stopReason: "stop",
+				content: [{ type: "text", text: "First post-reset response" }],
+			},
+		});
+		// awaitingRemoteRecreation triggers a fire-and-forget re-init here, which
+		// synchronously clears toolClient/remoteSessionId before re-establishing
+		// them through further async work.
+		agentSettled({}, context);
+
+		// No await in between: this deterministically lands inside the window
+		// where the old code observed neither a client nor a startup promise.
+		beforeAgentStart({ prompt: "Update my server cluster" }, context);
+		const injected = await contextHandler({ messages: [] }, context);
+
+		assert.equal(chatCalls.length, 1);
+		assert.match(
+			injected?.messages[0]?.content ?? "",
+			/The cluster runs on us-east-1\./,
+		);
+	} finally {
+		await sessionShutdown({}, context);
+		sessionManager.listAll = listAll;
+		sessionManager.open = open;
+		restoreEnvironment("HONCHO_API_KEY", previous);
+		restoreEnvironment("HONCHO_WORKSPACE_ID", previousWorkspaceId);
+	}
+});
+
 test("does not let a stale connection status replace a newer disabled startup", async () => {
 	let releaseConnection: (() => void) | undefined;
 	let requestReceived: (() => void) | undefined;
