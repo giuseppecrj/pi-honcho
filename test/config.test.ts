@@ -12,6 +12,14 @@ import {
 	saveHonchoTimeoutMs,
 } from "../src/remote/config-file.js";
 
+// Backstop isolation for configPath() (~/.honcho/config.json): individual
+// save/load tests below already redirect HOME/USERPROFILE per test, but this
+// guards any test that forgets to, so this file can never touch the real
+// user's Honcho config.
+const fakeHome = await mkdtemp(join(tmpdir(), "pi-honcho-config-home-"));
+process.env.HOME = fakeHome;
+process.env.USERPROFILE = fakeHome;
+
 test("environment values override the isolated Honcho host block", () => {
 	const envBaseUrl = ["https:", "", "env.example"].join("/");
 	const fileBaseUrl = ["https:", "", "file.example"].join("/");

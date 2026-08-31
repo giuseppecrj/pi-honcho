@@ -101,8 +101,6 @@ import {
 
 const STATUS_KEY = "pi-honcho";
 const FLUSH_TIMEOUT_MS = 2_000;
-/** Bounds how long a turn waits for in-flight startup (session/peer setup) before giving up on live recall for that turn. */
-const STARTUP_AWAIT_TIMEOUT_MS = 5_000;
 const inMemoryForkHandoffs = new InMemoryForkHandoffs();
 
 function raceTimeout(promise: Promise<void>, timeoutMs: number): Promise<void> {
@@ -863,12 +861,14 @@ export default function honchoMemory(
 	 * Waits for in-flight startup (session/peer setup) before reporting
 	 * availability, so a Honcho query that races the tail end of startup
 	 * blocks for the real result instead of silently reporting unavailable.
+	 * Bounded by the configured request timeout, not a fixed constant, so a
+	 * turn that races a re-init (e.g. after remote workspace recreation)
+	 * waits as long as the user is willing to wait for Honcho generally.
 	 */
 	async function availableToolClient(): Promise<
 		{ client: HonchoToolClient; sessionId: string } | undefined
 	> {
-		if (startupCompletion)
-			await raceTimeout(startupCompletion, STARTUP_AWAIT_TIMEOUT_MS);
+		if (startupCompletion) await raceTimeout(startupCompletion, timeoutMs);
 		return toolClient && remoteSessionId
 			? { client: toolClient, sessionId: remoteSessionId }
 			: undefined;

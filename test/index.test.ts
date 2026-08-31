@@ -27,6 +27,12 @@ import {
 process.env.PI_CODING_AGENT_DIR = await mkdtemp(
 	join(tmpdir(), "pi-honcho-agent-"),
 );
+// Isolates configPath() (~/.honcho/config.json) the same way PI_CODING_AGENT_DIR
+// isolates registryPath() above, so no test in this file can read or write the
+// real user's Honcho config regardless of whether it remembers to do so itself.
+const fakeHome = await mkdtemp(join(tmpdir(), "pi-honcho-home-"));
+process.env.HOME = fakeHome;
+process.env.USERPROFILE = fakeHome;
 const testRepositoryKey = canonicalRepositoryKey(
 	process.cwd(),
 	await repositoryOrigin(process.cwd()),
