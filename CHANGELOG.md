@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.2.1](https://github.com/giuseppecrj/pi-honcho/compare/v0.2.0...v0.2.1)
+
+### Fixed
+
+- Accept workspace-scoped API keys by checking the configured workspace instead of requiring an admin-only workspace listing.
+
+### Documentation
+
+- Document programmatic API-key scopes, provisioning, and revocation limitations.
+
 ## [v0.2.0](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.9...v0.2.0)
 
 ### Added

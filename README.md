@@ -151,6 +151,8 @@ You can configure Honcho with an API key or `/honcho login`. Browser sign-in req
 
 Credentials stay in `~/.honcho/config.json` or environment variables. Pi stores its stable identity and repository mappings in `honcho-memory.json` under `PI_CODING_AGENT_DIR` (default `~/.pi/agent`), separate from credentials.
 
+Pi Honcho can use a workspace-scoped API key. Peer- and session-scoped keys are insufficient because Pi Honcho operates across two peers and a memory session. You need an admin key to mint scoped keys, not for routine memory operations.
+
 A repository is uninitialized until you run `/honcho init` from a trusted project. `/honcho status` then tells you to run `/honcho init` and does not show a workspace. The registry uses the canonical Git `origin` when available and the resolved directory outside Git. `/honcho disable` retains the workspace mapping. `/honcho enable` restores it. Legacy workspace settings and `.pi/honcho-memory.json` project-policy files do not activate memory.
 
 Pi uses `user` and `pi` as the default peer IDs. Use `/honcho setup` to change them. Pi confirms an identity change when it affects initialized repositories.

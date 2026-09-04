@@ -214,7 +214,10 @@ class FakeSdk implements HonchoSdkClient {
 	peerFailures = new Map<string, number>();
 	peerGates = new Map<string, Promise<void>>();
 	sessionFailures = new Map<string, number>();
-	workspaceProbeResponses: unknown[] = [];
+	refreshResponses: unknown[] = [];
+	workspaceListResponses: unknown[] = [];
+	refreshCalls = 0;
+	workspaceListCalls = 0;
 	peerListResponses: unknown[] = [];
 	sessionListResponses: unknown[] = [];
 	workspaceDeleteResponses: unknown[] = [];
@@ -246,8 +249,16 @@ class FakeSdk implements HonchoSdkClient {
 		return session;
 	}
 
+	async refresh(): Promise<void> {
+		this.refreshCalls += 1;
+		await this.ensureWorkspace();
+		const response = this.refreshResponses.shift();
+		if (response instanceof Error) throw response;
+	}
+
 	async workspaces(_options?: unknown): Promise<FakePage<string>> {
-		const response = this.workspaceProbeResponses.shift();
+		this.workspaceListCalls += 1;
+		const response = this.workspaceListResponses.shift();
 		if (response instanceof Error) throw response;
 		return (
 			response === undefined ? new FakePage(["pi-test"]) : response
@@ -364,7 +375,7 @@ function deferred(): { promise: Promise<void>; resolve(): void } {
 	return { promise, resolve };
 }
 
-test("injects the SDK factory and probes the configured workspace", async () => {
+test("injects the SDK factory and refreshes the configured workspace", async () => {
 	const fake = new FakeSdk();
 	let options: unknown;
 	const client = new SdkHonchoMemoryClient(config, (createdOptions) => {
@@ -381,22 +392,22 @@ test("injects the SDK factory and probes the configured workspace", async () => 
 		maxRetries: 0,
 	});
 
-	fake.workspaceProbeResponses.push(new Error("connection failed"), null);
+	assert.equal(fake.refreshCalls, 1);
+	assert.equal(fake.workspaceCreationAttempts, 1);
+	fake.refreshResponses.push(new Error("connection failed"));
 	await assert.rejects(client.checkConnection(), /connection failed/);
-	await assert.rejects(
-		client.checkConnection(),
-		/malformed workspace response/i,
-	);
 	await client.checkConnection();
+	assert.equal(fake.refreshCalls, 3);
+	assert.equal(fake.workspaceListCalls, 0);
 });
 
 test("lists valid workspaces in stable order", async () => {
 	const fake = new FakeSdk();
-	fake.workspaceProbeResponses.push(new FakePage(["zeta", "alpha", "zeta"]));
+	fake.workspaceListResponses.push(new FakePage(["zeta", "alpha", "zeta"]));
 
 	assert.deepEqual(await adapter(fake).listWorkspaces(), ["alpha", "zeta"]);
 
-	fake.workspaceProbeResponses.push(new FakePage(["invalid.workspace"]));
+	fake.workspaceListResponses.push(new FakePage(["invalid.workspace"]));
 	await assert.rejects(
 		adapter(fake).listWorkspaces(),
 		/malformed workspace list/i,
@@ -657,9 +668,7 @@ test("refreshes failed direct SDK operations before retrying", async () => {
 		new Error("workspace deletion failed"),
 	);
 	const connectionFailure = new FakeSdk();
-	connectionFailure.workspaceProbeResponses.push(
-		new Error("connection failed"),
-	);
+	connectionFailure.refreshResponses.push(new Error("connection failed"));
 	const recovered = new FakeSdk();
 	const afterWorkspaceDeletion = new FakeSdk();
 	const instances = [
@@ -726,7 +735,7 @@ test("workspace deletion invalidates a newer SDK replacement", async () => {
 
 	const deletion = client.deleteWorkspace("pi-test");
 	await deletionStarted.promise;
-	deleting.workspaceProbeResponses.push(new Error("replace client"));
+	deleting.refreshResponses.push(new Error("replace client"));
 	await assert.rejects(client.checkConnection(), /replace client/);
 	await client.search("project", "cache current client");
 
@@ -753,7 +762,7 @@ test("session deletion removes a newer cached session", async () => {
 
 	const deletion = client.deleteSession("project");
 	await deletionStarted.promise;
-	deleting.workspaceProbeResponses.push(new Error("replace client"));
+	deleting.refreshResponses.push(new Error("replace client"));
 	await assert.rejects(client.checkConnection(), /replace client/);
 	await client.search("project", "cache current session");
 

@@ -66,6 +66,7 @@ interface HonchoSdkSession {
 }
 
 export interface HonchoSdkClient {
+	refresh(): Promise<void>;
 	workspaces(options?: unknown): Promise<HonchoSdkPage<string>>;
 	peer(
 		id: string,
@@ -163,9 +164,7 @@ export class SdkHonchoMemoryClient
 	}
 
 	async checkConnection(): Promise<void> {
-		await this.direct(async (client) => {
-			sdkPage(await client.workspaces({ size: 1 }), "workspace response");
-		});
+		await this.direct((client) => client.refresh());
 	}
 
 	async fetchCachedMemory(sessionId: string): Promise<CachedMemory> {
