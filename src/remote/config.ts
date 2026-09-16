@@ -1,11 +1,25 @@
 import { oauthTokensForHost, validOAuthAccessToken } from "./oauth.js";
 
-export const DEFAULT_TIMEOUT_MS = 3_000;
+/** Bounds a single blocking Honcho request, including live honcho_chat context queries. */
+export const DEFAULT_TIMEOUT_MS = 20_000;
 export const DEFAULT_WORKSPACE_ID = "pi";
 export const DEFAULT_PEER_NAME = "user";
 export const DEFAULT_AI_PEER = "pi";
 export const DEFAULT_MAX_MESSAGE_LENGTH = 8_000;
 export const DEFAULT_HONCHO_BASE_URL = "https://api.honcho.dev";
+/** Turns between automatic memory-context injections; 1 injects on every turn. */
+export const DEFAULT_CONTEXT_CADENCE_TURNS = 1;
+
+export const HONCHO_REASONING_LEVELS = [
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"max",
+] as const;
+export type HonchoReasoningLevel = (typeof HONCHO_REASONING_LEVELS)[number];
+/** Fastest dialectic tier; used for blocking, latency-sensitive honcho_chat queries. */
+export const DEFAULT_HONCHO_REASONING_LEVEL: HonchoReasoningLevel = "minimal";
 
 export interface HonchoConnectionConfig {
 	apiKey: string;
@@ -21,6 +35,8 @@ export interface HonchoConnectionConfig {
 	aiPeer: string;
 	timeoutMs: number;
 	maxMessageLength: number;
+	contextCadenceTurns: number;
+	reasoningLevel: HonchoReasoningLevel;
 }
 
 export type HonchoConfiguration =
@@ -36,6 +52,9 @@ interface HostSettings {
 	workspaceId?: unknown;
 	peerName?: unknown;
 	aiPeer?: unknown;
+	contextCadence?: unknown;
+	reasoningLevel?: unknown;
+	timeoutMs?: unknown;
 }
 
 export const HONCHO_HOST_NAME = "pi-honcho";
@@ -50,8 +69,25 @@ function workspaceString(value: unknown): string | undefined {
 	return typeof value === "string" ? value : undefined;
 }
 
+function numericString(value: unknown): string | undefined {
+	if (typeof value === "number" && Number.isFinite(value)) return String(value);
+	return nonEmptyString(value);
+}
+
 export const isValidHonchoWorkspaceId = (value: unknown): value is string =>
 	typeof value === "string" && /^[a-zA-Z0-9_-]+$/.test(value);
+
+export const isValidContextCadenceTurns = (value: unknown): value is number =>
+	typeof value === "number" && Number.isSafeInteger(value) && value > 0;
+
+export const isValidReasoningLevel = (
+	value: unknown,
+): value is HonchoReasoningLevel =>
+	typeof value === "string" &&
+	(HONCHO_REASONING_LEVELS as readonly string[]).includes(value);
+
+export const isValidTimeoutMs = (value: unknown): value is number =>
+	typeof value === "number" && Number.isSafeInteger(value) && value > 0;
 
 function positiveInteger(value: string | undefined, fallback: number): number {
 	const parsed = Number.parseInt(value ?? "", 10);
@@ -88,6 +124,16 @@ function hostSettings(configFile: unknown): HostSettings | undefined {
 		peerName:
 			nonEmptyString(primary.peerName) ?? nonEmptyString(legacy.peerName),
 		aiPeer: nonEmptyString(primary.aiPeer) ?? nonEmptyString(legacy.aiPeer),
+		contextCadence:
+			numericString(primary.contextCadence) ??
+			numericString(legacy.contextCadence),
+		reasoningLevel: isValidReasoningLevel(primary.reasoningLevel)
+			? primary.reasoningLevel
+			: isValidReasoningLevel(legacy.reasoningLevel)
+				? legacy.reasoningLevel
+				: undefined,
+		timeoutMs:
+			numericString(primary.timeoutMs) ?? numericString(legacy.timeoutMs),
 	};
 }
 
@@ -239,11 +285,29 @@ export function resolveHonchoConfig(
 				cli?.aiPeer,
 				DEFAULT_AI_PEER,
 			),
-			timeoutMs: DEFAULT_TIMEOUT_MS,
+			timeoutMs: positiveInteger(
+				nonEmptyString(env.HONCHO_TIMEOUT_MS) ??
+					numericString(host?.timeoutMs) ??
+					numericString(cli?.timeoutMs),
+				DEFAULT_TIMEOUT_MS,
+			),
 			maxMessageLength: positiveInteger(
 				env.HONCHO_MAX_MESSAGE_LENGTH,
 				DEFAULT_MAX_MESSAGE_LENGTH,
 			),
+			contextCadenceTurns: positiveInteger(
+				nonEmptyString(env.HONCHO_CONTEXT_CADENCE) ??
+					numericString(host?.contextCadence) ??
+					numericString(cli?.contextCadence),
+				DEFAULT_CONTEXT_CADENCE_TURNS,
+			),
+			reasoningLevel: isValidReasoningLevel(env.HONCHO_REASONING_LEVEL)
+				? env.HONCHO_REASONING_LEVEL
+				: isValidReasoningLevel(host?.reasoningLevel)
+					? host.reasoningLevel
+					: isValidReasoningLevel(cli?.reasoningLevel)
+						? cli.reasoningLevel
+						: DEFAULT_HONCHO_REASONING_LEVEL,
 		},
 	};
 }
