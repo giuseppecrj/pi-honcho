@@ -731,3 +731,66 @@ test("does not let a stale connection status replace a newer disabled startup", 
 		await new Promise<void>((resolve) => server.close(() => resolve()));
 	}
 });
+
+test("clears the footer status immediately instead of leaving a stale value while a new startup resolves", async () => {
+	const previous = Object.fromEntries(
+		["HONCHO_API_KEY", "HONCHO_ENABLED", "PI_SUBAGENT_ID"].map((name) => [
+			name,
+			process.env[name],
+		]),
+	);
+	process.env.HONCHO_API_KEY = "test-key";
+	delete process.env.HONCHO_ENABLED;
+	delete process.env.PI_SUBAGENT_ID;
+	const client = {
+		checkConnection: async () => undefined,
+		fetchCachedMemory: async () => ({}),
+		deliverExchange: async () => [],
+		reconcileOperationId: async () => [],
+		cloneSession: async () => "cloned-session",
+		search: async () => [],
+		chat: async () => undefined,
+		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
+		deleteSession: async () => undefined,
+		deleteConclusion: async () => undefined,
+		inspectWorkspace: async () => ({
+			workspaceId: "pi",
+			peerIds: [],
+			sessionCount: 0,
+			conclusionCount: 0,
+		}),
+		deleteWorkspace: async () => undefined,
+	};
+	const sessionManager = SessionManager as unknown as {
+		listAll: () => Promise<Array<{ path: string }>>;
+	};
+	const listAll = sessionManager.listAll;
+	sessionManager.listAll = async () => [];
+	const statuses: string[] = [];
+	const context = startupContext(statuses);
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI, () => client);
+	const sessionStart = pi.handlers.get("session_start") as (
+		event: { reason: "startup" | "new" },
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	const sessionShutdown = pi.handlers.get("session_shutdown") as (
+		event: unknown,
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	try {
+		await sessionStart({ reason: "startup" }, context);
+		await waitFor(() => statuses.at(-1) === "Honcho: connected · pi");
+
+		const restart = sessionStart({ reason: "new" }, context);
+		assert.notEqual(statuses.at(-1), "Honcho: connected · pi");
+		await restart;
+	} finally {
+		await sessionShutdown({}, context);
+		sessionManager.listAll = listAll;
+		restoreEnvironment("HONCHO_API_KEY", previous.HONCHO_API_KEY);
+		restoreEnvironment("HONCHO_ENABLED", previous.HONCHO_ENABLED);
+		restoreEnvironment("PI_SUBAGENT_ID", previous.PI_SUBAGENT_ID);
+	}
+});

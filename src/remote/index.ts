@@ -464,6 +464,12 @@ export default function honchoMemory(
 		remoteSessionId = undefined;
 		resetBlocked = false;
 		awaitingRemoteRecreation = false;
+		// resolveStartupConfiguration does real I/O (registry, config file, git) before
+		// any status is known for this generation. Without this, the footer keeps
+		// showing whatever the previous session/config left behind until that
+		// resolves, which looks like a stale or frozen status line on /new, /resume,
+		// /fork, or /honcho login.
+		if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, "Honcho: connecting…");
 
 		const startup = await resolveStartupConfiguration(ctx);
 		if (!isCurrentStartup(generation)) return staleStartupStatus();
