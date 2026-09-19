@@ -502,10 +502,10 @@ test("maps cached recall, delivery, reconciliation, and tool operations", async 
 			},
 		},
 	]);
-	assert.deepEqual(await client.reconcileOperationId("project", "pi-entry-1"), [
-		"existing-1",
-		"existing-2",
-	]);
+	assert.deepEqual(
+		await client.reconcileOperationIds("project", ["pi-entry-1"]),
+		new Map([["pi-entry-1", ["existing-1", "existing-2"]]]),
+	);
 	assert.deepEqual(await client.search("project", "needle"), ["search result"]);
 	assert.deepEqual(session.searchCalls, [
 		{ query: "needle", options: { limit: 10 } },

@@ -5,7 +5,10 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { resolveHonchoConfig } from "../src/remote/config.js";
-import { saveHonchoSettings } from "../src/remote/config-file.js";
+import {
+	saveHonchoSettings,
+	withHonchoOAuthTokens,
+} from "../src/remote/config-file.js";
 
 test("environment values override the isolated Honcho host block", () => {
 	const envBaseUrl = ["https:", "", "env.example"].join("/");
@@ -381,4 +384,31 @@ test("setup writes only non-secret primary settings and preserves unrelated conf
 		else process.env.USERPROFILE = previousUserProfile;
 		await rm(root, { recursive: true, force: true });
 	}
+});
+
+test("merges refreshed OAuth tokens into the in-memory config file", () => {
+	const tokens = {
+		accessToken: "new-access-token",
+		refreshToken: "new-refresh-token",
+		accessExpiresAt: 3_600_000,
+		clientId: "honcho-cli",
+		scope: "write",
+		host: "https://api.honcho.dev",
+	};
+	assert.deepEqual(
+		withHonchoOAuthTokens(
+			{
+				hosts: { "pi-honcho": { workspaceId: "pi" } },
+				oauth: { accessToken: "old-access-token" },
+			},
+			tokens,
+		),
+		{
+			hosts: { "pi-honcho": { workspaceId: "pi" } },
+			oauth: tokens,
+		},
+	);
+	assert.deepEqual(withHonchoOAuthTokens(undefined, tokens), {
+		oauth: tokens,
+	});
 });

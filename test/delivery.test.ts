@@ -22,9 +22,9 @@ test("delivers safe finalized exchanges in order and records remote acknowledgem
 			delivered.push(item.operationId);
 			return [`remote-${item.operationId}`];
 		},
-		reconcileOperationId: async (_sessionId, operationId) => {
-			reconciled.push(operationId);
-			return [];
+		reconcileOperationIds: async (_sessionId, operationIds) => {
+			reconciled.push(...operationIds);
+			return new Map();
 		},
 	};
 	const queue = new ExchangeDeliveryQueue(
@@ -48,8 +48,8 @@ test("delivers safe finalized exchanges in order and records remote acknowledgem
 	]);
 });
 
-test("reconciles recovery exchanges before delivering them", async () => {
-	const reconciled: string[] = [];
+test("reconciles recovery exchanges with one history fetch per flush", async () => {
+	const reconciled: string[][] = [];
 	const delivered: string[] = [];
 	const acknowledgements: RemoteAcknowledgement[] = [];
 	const client: HonchoExchangeClient & HonchoRecoveryClient = {
@@ -57,9 +57,9 @@ test("reconciles recovery exchanges before delivering them", async () => {
 			delivered.push(item.operationId);
 			return [`remote-${item.operationId}`];
 		},
-		reconcileOperationId: async (_sessionId, operationId) => {
-			reconciled.push(operationId);
-			return operationId === "already-remote" ? ["remote-existing"] : [];
+		reconcileOperationIds: async (_sessionId, operationIds) => {
+			reconciled.push([...operationIds]);
+			return new Map([["already-remote", ["remote-existing"]]]);
 		},
 	};
 	const queue = new ExchangeDeliveryQueue(
@@ -75,7 +75,7 @@ test("reconciles recovery exchanges before delivering them", async () => {
 	queue.enqueueRecovery(exchange("missing-remote"));
 	await queue.flush();
 
-	assert.deepEqual(reconciled, ["already-remote", "missing-remote"]);
+	assert.deepEqual(reconciled, [["already-remote", "missing-remote"]]);
 	assert.deepEqual(delivered, ["missing-remote"]);
 	assert.deepEqual(acknowledgements, [
 		{ operationId: "already-remote", messageIds: ["remote-existing"] },
@@ -88,10 +88,10 @@ test("keeps recovery exchanges pending after reconciliation or delivery failures
 	let deliveryAttempts = 0;
 	const acknowledgements: RemoteAcknowledgement[] = [];
 	const recoveryClient: HonchoRecoveryClient = {
-		reconcileOperationId: async () => {
+		reconcileOperationIds: async () => {
 			reconciliationAttempts += 1;
 			if (reconciliationAttempts === 1) throw new Error("offline");
-			return [];
+			return new Map();
 		},
 	};
 	const queue = new ExchangeDeliveryQueue(
@@ -132,9 +132,9 @@ test("keeps a failed exchange queued for retry with its stable operation ID", as
 			delivered.push(item.operationId);
 			return ["remote-1"];
 		},
-		reconcileOperationId: async () => {
+		reconcileOperationIds: async () => {
 			reconciliationAttempts += 1;
-			return [];
+			return new Map();
 		},
 	};
 	const queue = new ExchangeDeliveryQueue(
@@ -162,9 +162,9 @@ test("reconciles a rejected delivery before retrying it", async () => {
 			deliveryAttempts += 1;
 			throw new Error("response lost");
 		},
-		reconcileOperationId: async () => {
+		reconcileOperationIds: async () => {
 			reconciliationAttempts += 1;
-			return ["remote-1"];
+			return new Map([["pi-entry-1", ["remote-1"]]]);
 		},
 	};
 	const queue = new ExchangeDeliveryQueue(
@@ -197,9 +197,9 @@ test("reconciles after acknowledgement failure without redelivering", async () =
 			deliveryAttempts += 1;
 			return ["remote-1"];
 		},
-		reconcileOperationId: async () => {
+		reconcileOperationIds: async () => {
 			reconciliationAttempts += 1;
-			return ["remote-1"];
+			return new Map([["pi-entry-1", ["remote-1"]]]);
 		},
 	};
 	const queue = new ExchangeDeliveryQueue(
