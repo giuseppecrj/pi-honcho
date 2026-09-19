@@ -5,22 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [v0.2.1](https://github.com/giuseppecrj/pi-honcho/compare/v0.2.0...v0.2.1)
+## [v0.3.0](https://github.com/giuseppecrj/pi-honcho/compare/v0.2.1...v0.3.0)
 
-### Fixed
+Performance release. Session startup and `/reload` no longer parse the entire session history for reset recovery (raw-byte marker pre-filter; measured 1,155 files scanned with only 2 parsed, ~12ms instead of multi-second CPU). Per-turn hooks now use incremental entry tracking, a stat-gated standing-instructions cache, and a cached, budget-correct memory context. `session_search` keeps its SQLite handle and clean-file index across calls. New `HONCHO_DEBUG=1` (plus optional `HONCHO_DEBUG_FILE`) writes provenance logs with timings and counters for startup, delivery, and cache behavior. Nested skills are now fully manageable (view, patch, delete) within their root, and the test suite is hermetic — `npm test` can no longer write to the real `~/.pi/agent/honcho-memory.json` or `~/.honcho/config.json` (users bitten by the previous behavior should run `/honcho init` once to re-link).
 
-- Accept workspace-scoped API keys by checking the configured workspace instead of requiring an admin-only workspace listing.
+### Merged
 
-### Documentation
+- perf: eliminate startup session-scan and hot-path costs, add HONCHO_DEBUG provenance logging [`#7`](https://github.com/giuseppecrj/pi-honcho/pull/7)
 
-- Document programmatic API-key scopes, provisioning, and revocation limitations.
+### Commits
 
-## [v0.2.0](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.9...v0.2.0)
+- perf(remote): cut startup, per-turn, and recovery hot-path costs [`80a542f`](https://github.com/giuseppecrj/pi-honcho/commit/80a542f5adfeb5e943bd0a31cc74cdb915a2c076)
+- perf(local): cache hot paths for standing instructions, session search, and skills [`26ab814`](https://github.com/giuseppecrj/pi-honcho/commit/26ab814baf1b9b8af238870f75f9cc79e3a0d0ac)
+- fix: address perf review findings [`dbe63f5`](https://github.com/giuseppecrj/pi-honcho/commit/dbe63f5591dfcd9ca95ab8a9d48e243710772a9c)
+- feat: add HONCHO_DEBUG provenance logging [`a481810`](https://github.com/giuseppecrj/pi-honcho/commit/a4818105b219028aacab93c920412ce032dcccf3)
+- fix: allow nested skill deletion within root [`864ec73`](https://github.com/giuseppecrj/pi-honcho/commit/864ec738dcdb5c192755a283fcf1742ff6e24e76)
+- fix(test): pin agent dirs so tests cannot write real user state [`5131870`](https://github.com/giuseppecrj/pi-honcho/commit/5131870d1f112283d4dfe092b19b11ef93ea2820)
 
-### Added
+## [v0.2.1](https://github.com/giuseppecrj/pi-honcho/compare/v0.2.0...v0.2.1) - 2026-09-04
 
-- Browser sign-in with `/honcho login` through Honcho's OAuth device authorization flow.
-- Reuse and refresh compatible Honcho CLI OAuth credentials without requiring the CLI.
+### Commits
+
+- fix: support workspace-scoped Honcho API keys [`a046a28`](https://github.com/giuseppecrj/pi-honcho/commit/a046a28b65ba9e0e6608e970ed6b20627ef3cbe9)
+- docs: add release workflow skill [`9f55ba2`](https://github.com/giuseppecrj/pi-honcho/commit/9f55ba2f31c7595dd164c2a1f5ce6e8603c8e21f)
+- docs: add v0.2.0 release notes [`4986d54`](https://github.com/giuseppecrj/pi-honcho/commit/4986d545a7f429fc98652c424d9d9ae1a9744876)
+
+## [v0.2.0](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.9...v0.2.0) - 2026-08-17
+
+### Commits
+
+- feat: add browser OAuth sign-in [`ace29b9`](https://github.com/giuseppecrj/pi-honcho/commit/ace29b915fbe520112e261b0823386b440d03ec3)
 
 ## [v0.1.9](https://github.com/giuseppecrj/pi-honcho/compare/v0.1.8...v0.1.9) - 2026-08-17
 

@@ -1078,8 +1078,8 @@ test("session_search stops matching a listed session file that becomes unreadabl
 			]),
 		);
 		assert.match(
-			(await fixture.search("search-1", { query: "zebra" })).content[0]
-				?.text ?? "",
+			(await fixture.search("search-1", { query: "zebra" })).content[0]?.text ??
+				"",
 			/vanishing zebra sighting/,
 		);
 		await writeFile(
@@ -1095,14 +1095,14 @@ test("session_search stops matching a listed session file that becomes unreadabl
 		);
 		unreadable = true;
 		assert.doesNotMatch(
-			(await fixture.search("search-2", { query: "zebra" })).content[0]
-				?.text ?? "",
+			(await fixture.search("search-2", { query: "zebra" })).content[0]?.text ??
+				"",
 			/vanishing zebra sighting/,
 		);
 		unreadable = false;
 		assert.match(
-			(await fixture.search("search-3", { query: "heron" })).content[0]
-				?.text ?? "",
+			(await fixture.search("search-3", { query: "heron" })).content[0]?.text ??
+				"",
 			/replacement heron sighting/,
 		);
 	} finally {
