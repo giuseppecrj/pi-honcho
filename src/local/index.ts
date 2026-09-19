@@ -398,6 +398,8 @@ async function indexSessions(
 				mtimeNs: stats.mtimeNs.toString(),
 				ctimeNs: stats.ctimeNs.toString(),
 			};
+			// Accepted limitation: a same-size rewrite that also preserves mtime and
+			// ctime (not achievable with normal tooling) is not detected as a change.
 			const statKey = `${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`;
 			if (cleanFiles.get(path) === statKey) {
 				skippedClean += 1;
@@ -427,8 +429,11 @@ async function indexSessions(
 				);
 			cleanFiles.set(path, statKey);
 		} catch {
+			// Unreadable or disappearing files are skipped; the next search can
+			// retry. Dropping the path from `seen` and the clean-file cache lets the
+			// cleanup below delete its stale indexed rows.
 			cleanFiles.delete(path);
-			// Unreadable or disappearing files are skipped; the next search can retry.
+			seen.delete(path);
 		}
 	}
 	for (const path of cleanFiles.keys())
@@ -635,6 +640,89 @@ export default function localKnowledgeTools(
 		db = undefined;
 		cleanFiles.clear();
 	}
+	// Searches run one at a time: concurrent calls share the SQLite handle, so
+	// serializing them keeps open/reset atomic — a second call can neither open
+	// a duplicate handle nor reset one the first call is still using.
+	let searchChain: Promise<unknown> = Promise.resolve();
+	async function runSearch(input: SearchInput) {
+		try {
+			debugLog("honcho:local", "session_search.db", { reused: Boolean(db) });
+			const database = await getDatabase();
+			await indexSessions(database, paths.sessionsDir, readSession, cleanFiles);
+			const total = (
+				database.prepare("SELECT COUNT(*) AS count FROM messages").get() as {
+					count: number;
+				}
+			).count;
+			if (!total)
+				return toolResult(
+					"No sessions indexed yet. Pi JSONL sessions are indexed automatically when available.",
+					{
+						success: false,
+						message:
+							"No sessions indexed yet. Pi JSONL sessions are indexed automatically when available.",
+					},
+				);
+			const limit = bounded(input.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
+			const snippetChars = bounded(
+				input.snippetChars,
+				DEFAULT_SNIPPET_CHARS,
+				100,
+				MAX_SNIPPET_CHARS,
+			);
+			const queryStart = Date.now();
+			const results = search(database, input, limit);
+			debugLog("honcho:local", "session_search.query", {
+				ms: Date.now() - queryStart,
+				count: results.length,
+			});
+			if (!results.length)
+				return toolResult(
+					"No results found. Try a different search term or broader query.",
+					{
+						success: true,
+						count: 0,
+						message:
+							"No results found. Try a different search term or broader query.",
+					},
+				);
+			let truncatedCount = 0;
+			const blocks = results.map((result) => {
+				const truncated = result.content.length > snippetChars;
+				if (truncated) truncatedCount += 1;
+				const snippet = truncated
+					? `${result.content.slice(0, snippetChars)}\n... (truncated, ${result.content.length} chars total — refine the query or increase snippetChars)`
+					: result.content;
+				const date = new Date(result.timestamp).toLocaleDateString("en-US", {
+					year: "numeric",
+					month: "short",
+					day: "numeric",
+				});
+				return [
+					"---",
+					`📅 ${date} | 📁 ${result.project} | ${result.role === "user" ? "👤 User" : "🤖 Assistant"}`,
+					snippet,
+				].join("\n");
+			});
+			const output = capOutput(
+				`Found ${results.length} results for "${input.query}":\n\n${blocks.join("\n\n")}`,
+			);
+			return toolResult(output.text, {
+				success: true,
+				count: results.length,
+				truncatedCount,
+				snippetChars,
+				outputChars: output.text.length,
+				outputTruncated: output.truncated,
+			});
+		} catch (error) {
+			resetDatabase();
+			return toolResult(
+				`Session search unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+				{ success: false, message: "Session search unavailable" },
+			);
+		}
+	}
 	pi.registerTool({
 		name: "session_search",
 		label: "Session Search",
@@ -686,88 +774,9 @@ Returns bounded conversation snippets with session dates and project context. La
 					success: false,
 					message: "query is required",
 				});
-			try {
-				debugLog("honcho:local", "session_search.db", { reused: Boolean(db) });
-				const database = await getDatabase();
-				await indexSessions(
-					database,
-					paths.sessionsDir,
-					readSession,
-					cleanFiles,
-				);
-				const total = (
-					database.prepare("SELECT COUNT(*) AS count FROM messages").get() as {
-						count: number;
-					}
-				).count;
-				if (!total)
-					return toolResult(
-						"No sessions indexed yet. Pi JSONL sessions are indexed automatically when available.",
-						{
-							success: false,
-							message:
-								"No sessions indexed yet. Pi JSONL sessions are indexed automatically when available.",
-						},
-					);
-				const limit = bounded(input.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
-				const snippetChars = bounded(
-					input.snippetChars,
-					DEFAULT_SNIPPET_CHARS,
-					100,
-					MAX_SNIPPET_CHARS,
-				);
-				const queryStart = Date.now();
-				const results = search(database, input, limit);
-				debugLog("honcho:local", "session_search.query", {
-					ms: Date.now() - queryStart,
-					count: results.length,
-				});
-				if (!results.length)
-					return toolResult(
-						"No results found. Try a different search term or broader query.",
-						{
-							success: true,
-							count: 0,
-							message:
-								"No results found. Try a different search term or broader query.",
-						},
-					);
-				let truncatedCount = 0;
-				const blocks = results.map((result) => {
-					const truncated = result.content.length > snippetChars;
-					if (truncated) truncatedCount += 1;
-					const snippet = truncated
-						? `${result.content.slice(0, snippetChars)}\n... (truncated, ${result.content.length} chars total — refine the query or increase snippetChars)`
-						: result.content;
-					const date = new Date(result.timestamp).toLocaleDateString("en-US", {
-						year: "numeric",
-						month: "short",
-						day: "numeric",
-					});
-					return [
-						"---",
-						`📅 ${date} | 📁 ${result.project} | ${result.role === "user" ? "👤 User" : "🤖 Assistant"}`,
-						snippet,
-					].join("\n");
-				});
-				const output = capOutput(
-					`Found ${results.length} results for "${input.query}":\n\n${blocks.join("\n\n")}`,
-				);
-				return toolResult(output.text, {
-					success: true,
-					count: results.length,
-					truncatedCount,
-					snippetChars,
-					outputChars: output.text.length,
-					outputTruncated: output.truncated,
-				});
-			} catch (error) {
-				resetDatabase();
-				return toolResult(
-					`Session search unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
-					{ success: false, message: "Session search unavailable" },
-				);
-			}
+			const run = searchChain.then(() => runSearch(input));
+			searchChain = run.catch(() => undefined);
+			return run;
 		},
 	});
 }

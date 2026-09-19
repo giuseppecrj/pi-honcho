@@ -211,6 +211,8 @@ export class StandingInstructions {
 		}
 		try {
 			const stats = await stat(this.filePath, { bigint: true });
+			// Accepted limitation: a same-size rewrite that also preserves mtime and
+			// ctime (not achievable with normal tooling) is not detected as a change.
 			const key = `${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`;
 			const recentlyWritten =
 				BigInt(Date.now()) * 1_000_000n - stats.mtimeNs <

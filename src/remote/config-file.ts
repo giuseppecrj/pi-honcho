@@ -188,17 +188,19 @@ export function withHonchoOAuthTokens(
 	};
 }
 
+/**
+ * Re-reads the config file before merging so concurrent writers are not
+ * clobbered, and returns the exact merged object that was persisted (or null
+ * on failure) so callers can adopt it as their in-memory config.
+ */
 export async function saveHonchoOAuthTokens(
 	oauth: OAuthTokens,
-): Promise<boolean> {
+): Promise<Record<string, unknown> | null> {
 	try {
-		const existing = await loadHonchoConfigFile();
-		return writeJsonAtomically(
-			configPath(),
-			withHonchoOAuthTokens(existing, oauth),
-		);
+		const merged = withHonchoOAuthTokens(await loadHonchoConfigFile(), oauth);
+		return (await writeJsonAtomically(configPath(), merged)) ? merged : null;
 	} catch {
-		return false;
+		return null;
 	}
 }
 

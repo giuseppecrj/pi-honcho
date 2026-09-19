@@ -32,7 +32,6 @@ import {
 	repositoryOrigin,
 	saveHonchoOAuthTokens,
 	saveHonchoRegistry,
-	withHonchoOAuthTokens,
 } from "./config-file.js";
 import {
 	ExchangeDeliveryQueue,
@@ -307,8 +306,12 @@ async function resolveStartupConfiguration(
 		debugLog("honcho:remote", "oauth.refresh", {
 			refreshed: Boolean(refreshed),
 		});
-		if (refreshed && (await saveHonchoOAuthTokens(refreshed)))
-			configFile = withHonchoOAuthTokens(configFile, refreshed);
+		if (refreshed) {
+			// Adopt exactly what was persisted so memory and disk cannot diverge
+			// when another process rewrote the config file in between.
+			const persisted = await saveHonchoOAuthTokens(refreshed);
+			if (persisted) configFile = persisted;
+		}
 	} else if (oauth) {
 		debugLog("honcho:remote", "oauth.refresh", {
 			skipped: true,

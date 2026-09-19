@@ -646,6 +646,45 @@ test("linked worktrees share the main repository project skill root", async () =
 	}
 });
 
+test("nested skills are listed, viewable, and patchable", async () => {
+	const fixture = await setup({ project: false });
+	try {
+		const nested = join(fixture.global, "nested", "deep-skill");
+		await mkdir(nested, { recursive: true });
+		await writeFile(
+			join(nested, "SKILL.md"),
+			`---\nname: deep-skill\ndescription: Nested skill\n---\n## Procedure\n1. old\n`,
+		);
+		const list = await output(fixture.tool, { action: "view" });
+		assert.ok(
+			(list.skills as Array<{ skillId: string }>).some(
+				(item) => item.skillId === "global:deep-skill",
+			),
+		);
+		const viewed = await output(fixture.tool, {
+			action: "view",
+			skill_id: "global:deep-skill",
+		});
+		assert.equal(viewed.success, true);
+		assert.equal(viewed.body, "## Procedure\n1. old");
+		const patched = await output(fixture.tool, {
+			action: "patch",
+			skill_id: "global:deep-skill",
+			section: "Procedure",
+			content: "1. new",
+		});
+		assert.equal(patched.success, true);
+		const text = await readFile(join(nested, "SKILL.md"), "utf8");
+		assert.ok(text.includes("1. new"));
+		await assert.rejects(
+			access(join(fixture.global, "deep-skill", "SKILL.md")),
+			"patch must write to the nested path, not a new top-level copy",
+		);
+	} finally {
+		await cleanup(fixture.root);
+	}
+});
+
 test("view resolves a skill id directly and sees external edits immediately", async () => {
 	const fixture = await setup();
 	try {
