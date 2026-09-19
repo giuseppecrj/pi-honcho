@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -152,7 +152,7 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 			return { summary: "recalled session" };
 		},
 		deliverExchange: async () => [],
-		reconcileOperationId: async () => [],
+		reconcileOperationIds: async () => new Map<string, string[]>(),
 		cloneSession: async () => "cloned-session",
 		search: async () => [],
 		chat: async () => undefined,
@@ -427,9 +427,14 @@ test("uses remote reconciliation only for pending recovery delivery", async () =
 			delivered.push(exchange.operationId);
 			return [`remote-${exchange.operationId}`];
 		},
-		reconcileOperationId: async (_sessionId: string, operationId: string) => {
-			reconciled.push(operationId);
-			return ["remote-existing"];
+		reconcileOperationIds: async (
+			_sessionId: string,
+			operationIds: readonly string[],
+		) => {
+			reconciled.push(...operationIds);
+			return new Map(
+				operationIds.map((operationId) => [operationId, ["remote-existing"]]),
+			);
 		},
 		cloneSession: async () => "cloned-session",
 		search: async () => [],
@@ -531,6 +536,45 @@ test("uses remote reconciliation only for pending recovery delivery", async () =
 				},
 			},
 		]);
+
+		beforeAgentStart({ prompt: "Prompt without a new response" }, context);
+		agentSettled({}, context);
+		const switchedBranch: unknown[] = [
+			{ id: "stale-custom", type: "custom", customType: "noise", data: {} },
+			{
+				id: "stale-assistant",
+				type: "message",
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: "Stale response" }],
+				},
+			},
+		];
+		const switchedContext = {
+			...context,
+			sessionManager: {
+				getSessionId: () => "pi-session-2",
+				getEntries: () => switchedBranch,
+				getBranch: () => switchedBranch,
+			},
+		} as unknown as ExtensionContext;
+		beforeAgentStart(
+			{ prompt: "Prompt in a switched session" },
+			switchedContext,
+		);
+		agentSettled({}, switchedContext);
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+		assert.deepEqual(delivered, ["pi-assistant-1"]);
+		assert.equal(
+			pi.entries.filter(
+				(entry) =>
+					entry.customType === "pi-honcho-memory.delivery" &&
+					(entry.data as { kind?: string }).kind === "pending",
+			).length,
+			1,
+		);
 	} finally {
 		await sessionShutdown({}, context);
 		sessionManager.listAll = listAll;
@@ -570,11 +614,16 @@ test("reconciles older post-reset delivery before normally delivering the exchan
 			delivered.push(exchange.operationId);
 			return [`remote-${exchange.operationId}`];
 		},
-		reconcileOperationId: async (_sessionId: string, operationId: string) => {
-			reconciled.push(operationId);
-			return operationId === "pi-existing-post-reset"
-				? ["remote-existing"]
-				: [];
+		reconcileOperationIds: async (
+			_sessionId: string,
+			operationIds: readonly string[],
+		) => {
+			reconciled.push(...operationIds);
+			return new Map(
+				operationIds
+					.filter((operationId) => operationId === "pi-existing-post-reset")
+					.map((operationId) => [operationId, ["remote-existing"]]),
+			);
 		},
 		cloneSession: async () => "cloned-session",
 		search: async () => [],
@@ -729,5 +778,94 @@ test("does not let a stale connection status replace a newer disabled startup", 
 		restoreEnvironment("HONCHO_BASE_URL", previous.HONCHO_BASE_URL);
 		restoreEnvironment("HONCHO_ENABLED", previous.HONCHO_ENABLED);
 		await new Promise<void>((resolve) => server.close(() => resolve()));
+	}
+});
+
+test("skips entry parsing for session files without a workspace-reset marker", async () => {
+	const previous = process.env.HONCHO_API_KEY;
+	const previousWorkspaceId = process.env.HONCHO_WORKSPACE_ID;
+	process.env.HONCHO_API_KEY = "test-key";
+	process.env.HONCHO_WORKSPACE_ID = "pi";
+	const sessionDir = await mkdtemp(join(tmpdir(), "pi-honcho-reset-scan-"));
+	const resetSessionPath = join(sessionDir, "with-reset.jsonl");
+	const plainSessionPath = join(sessionDir, "without-reset.jsonl");
+	await writeFile(
+		resetSessionPath,
+		`${JSON.stringify({
+			type: "custom",
+			customType: "pi-honcho-memory.reset",
+			timestamp: "2026-08-11T00:00:00.000Z",
+			data: { kind: "complete", workspaceId: "pi" },
+		})}\n`,
+	);
+	await writeFile(
+		plainSessionPath,
+		`${JSON.stringify({ type: "message", message: { role: "user" } })}\n`,
+	);
+	const sessionManager = SessionManager as unknown as {
+		listAll: () => Promise<Array<{ path: string }>>;
+		open: (path: string) => { getEntries: () => unknown[] };
+	};
+	const listAll = sessionManager.listAll;
+	const open = sessionManager.open;
+	sessionManager.listAll = async () => [
+		{ path: resetSessionPath },
+		{ path: plainSessionPath },
+	];
+	const parsedSessionPaths: string[] = [];
+	sessionManager.open = (path: string) => {
+		parsedSessionPaths.push(path);
+		return {
+			getEntries: () => [
+				{
+					type: "custom",
+					customType: "pi-honcho-memory.reset",
+					timestamp: "2026-08-11T00:00:00.000Z",
+					data: { kind: "complete", workspaceId: "pi" },
+				},
+			],
+		};
+	};
+	const client = {
+		checkConnection: async () => undefined,
+		fetchCachedMemory: async () => ({}),
+		deliverExchange: async () => ["remote-1"],
+		reconcileOperationIds: async () => new Map<string, string[]>(),
+		cloneSession: async () => "cloned-session",
+		search: async () => [],
+		chat: async () => undefined,
+		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
+		deleteSession: async () => undefined,
+		deleteConclusion: async () => undefined,
+		inspectWorkspace: async () => ({
+			workspaceId: "pi",
+			peerIds: [],
+			sessionCount: 0,
+			conclusionCount: 0,
+		}),
+		deleteWorkspace: async () => undefined,
+	};
+	const context = startupContext();
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI, () => client);
+	const sessionStart = pi.handlers.get("session_start") as (
+		event: { reason: "startup" },
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	const sessionShutdown = pi.handlers.get("session_shutdown") as (
+		event: unknown,
+		ctx: ExtensionContext,
+	) => Promise<void>;
+	try {
+		await sessionStart({ reason: "startup" }, context);
+
+		assert.deepEqual(parsedSessionPaths, [resetSessionPath]);
+	} finally {
+		await sessionShutdown({}, context);
+		sessionManager.listAll = listAll;
+		sessionManager.open = open;
+		restoreEnvironment("HONCHO_API_KEY", previous);
+		restoreEnvironment("HONCHO_WORKSPACE_ID", previousWorkspaceId);
 	}
 });

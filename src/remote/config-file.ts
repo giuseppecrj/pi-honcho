@@ -139,7 +139,7 @@ export async function readProjectHonchoPolicyFile(
 
 async function writeJsonAtomically(
 	path: string,
-	value: object,
+	value: unknown,
 ): Promise<boolean> {
 	const directory = dirname(path);
 	const temporaryPath = join(directory, `.${process.pid}.${randomUUID()}.tmp`);
@@ -167,23 +167,36 @@ export async function saveProjectHonchoPolicy(
 	return (await writeJsonAtomically(path, policy)) ? path : undefined;
 }
 
+export function withHonchoOAuthTokens(
+	configFile: unknown,
+	oauth: OAuthTokens,
+): Record<string, unknown> {
+	const config =
+		configFile && typeof configFile === "object"
+			? (configFile as Record<string, unknown>)
+			: {};
+	return {
+		...config,
+		oauth: {
+			accessToken: oauth.accessToken,
+			refreshToken: oauth.refreshToken,
+			accessExpiresAt: oauth.accessExpiresAt,
+			clientId: oauth.clientId,
+			scope: oauth.scope,
+			host: oauth.host,
+		},
+	};
+}
+
 export async function saveHonchoOAuthTokens(
 	oauth: OAuthTokens,
 ): Promise<boolean> {
 	try {
 		const existing = await loadHonchoConfigFile();
-		const config = existing && typeof existing === "object" ? existing : {};
-		return writeJsonAtomically(configPath(), {
-			...config,
-			oauth: {
-				accessToken: oauth.accessToken,
-				refreshToken: oauth.refreshToken,
-				accessExpiresAt: oauth.accessExpiresAt,
-				clientId: oauth.clientId,
-				scope: oauth.scope,
-				host: oauth.host,
-			},
-		});
+		return writeJsonAtomically(
+			configPath(),
+			withHonchoOAuthTokens(existing, oauth),
+		);
 	} catch {
 		return false;
 	}

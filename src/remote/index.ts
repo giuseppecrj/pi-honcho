@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises"; // pi-lens-ignore: find-import-file-without-extension
+
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -29,6 +31,7 @@ import {
 	repositoryOrigin,
 	saveHonchoOAuthTokens,
 	saveHonchoRegistry,
+	withHonchoOAuthTokens,
 } from "./config-file.js";
 import {
 	ExchangeDeliveryQueue,
@@ -78,31 +81,53 @@ import { formatStatusDetails, type StatusDetails } from "./status-details.js";
 import {
 	isWorkspaceResetEntry,
 	resetRecovery,
+	type TimedResetEntry,
 	WORKSPACE_RESET_ENTRY_KEY,
 } from "./workspace-reset.js";
 
 const STATUS_KEY = "pi-honcho";
 const FLUSH_TIMEOUT_MS = 2_000;
+const RESET_SCAN_CONCURRENCY = 8;
 const inMemoryForkHandoffs = new InMemoryForkHandoffs();
+
+async function sessionResetEntries(path: string): Promise<TimedResetEntry[]> {
+	try {
+		// A raw-byte marker scan avoids entry-parsing sessions that cannot
+		// contain a workspace-reset entry.
+		const raw = await readFile(path);
+		if (!raw.includes(WORKSPACE_RESET_ENTRY_KEY)) return [];
+	} catch {
+		// Fall through to entry parsing when the raw bytes are unavailable.
+	}
+	return SessionManager.open(path)
+		.getEntries()
+		.flatMap((entry) =>
+			entry.type === "custom" &&
+			entry.customType === WORKSPACE_RESET_ENTRY_KEY &&
+			isWorkspaceResetEntry(entry.data)
+				? [{ data: entry.data, timestamp: entry.timestamp }]
+				: [],
+		);
+}
 
 async function persistedResetRecovery(
 	workspaceId: string,
 ): Promise<StartupRecovery> {
 	const sessions = await SessionManager.listAll();
-	const resetEntries = await Promise.all(
-		sessions.map((session) =>
-			SessionManager.open(session.path)
-				.getEntries()
-				.flatMap((entry) =>
-					entry.type === "custom" &&
-					entry.customType === WORKSPACE_RESET_ENTRY_KEY &&
-					isWorkspaceResetEntry(entry.data)
-						? [{ data: entry.data, timestamp: entry.timestamp }]
-						: [],
-				),
-		),
-	);
-	return resetRecovery(workspaceId, resetEntries.flat());
+	const resetEntries: TimedResetEntry[] = [];
+	for (
+		let index = 0;
+		index < sessions.length;
+		index += RESET_SCAN_CONCURRENCY
+	) {
+		const batch = await Promise.all(
+			sessions
+				.slice(index, index + RESET_SCAN_CONCURRENCY)
+				.map((session) => sessionResetEntries(session.path)),
+		);
+		resetEntries.push(...batch.flat());
+	}
+	return resetRecovery(workspaceId, resetEntries);
 }
 
 function remoteSessionIdForStartup(
@@ -268,7 +293,7 @@ async function resolveStartupConfiguration(
 	if (oauth && !validOAuthAccessToken(configFile, baseUrl)) {
 		const refreshed = await refreshOAuthTokens(oauth);
 		if (refreshed && (await saveHonchoOAuthTokens(refreshed)))
-			configFile = await loadHonchoConfigFile();
+			configFile = withHonchoOAuthTokens(configFile, refreshed);
 	}
 	const configured = resolveHonchoConfig(
 		process.env,
@@ -371,6 +396,8 @@ export default function honchoMemory(
 	let memoryGeneration = 0;
 	let submittedPrompt: string | undefined;
 	let entryIdsBeforeRun = new Set<string>();
+	let trackedSessionId: string | undefined;
+	let trackedEntryCount = 0;
 	let resetBlocked = false;
 	let awaitingRemoteRecreation = false;
 	let privacyDisabled = false;
@@ -550,9 +577,19 @@ export default function honchoMemory(
 
 	pi.on("before_agent_start", (event, ctx) => {
 		submittedPrompt = event.prompt;
-		entryIdsBeforeRun = new Set(
-			ctx.sessionManager.getEntries().map((entry) => entry.id),
-		);
+		// Sessions are append-only, so only entries added since the last turn
+		// need indexing; a session change or shrink invalidates the tracker.
+		const entries = ctx.sessionManager.getEntries();
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (sessionId !== trackedSessionId || entries.length < trackedEntryCount) {
+			trackedSessionId = sessionId;
+			trackedEntryCount = 0;
+			entryIdsBeforeRun = new Set();
+		}
+		for (; trackedEntryCount < entries.length; trackedEntryCount += 1) {
+			const entry = entries[trackedEntryCount];
+			if (entry) entryIdsBeforeRun.add(entry.id);
+		}
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {

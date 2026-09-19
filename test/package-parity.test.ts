@@ -132,7 +132,7 @@ function connectedClient() {
 		checkConnection: async () => undefined,
 		fetchCachedMemory: async () => ({}),
 		deliverExchange: async () => ["remote-1"],
-		reconcileOperationId: async () => [],
+		reconcileOperationIds: async () => new Map<string, string[]>(),
 		cloneSession: async () => "cloned-session",
 		search: async () => [],
 		chat: async () => undefined,

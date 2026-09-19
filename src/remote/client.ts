@@ -252,12 +252,12 @@ export class SdkHonchoMemoryClient
 		);
 	}
 
-	async reconcileOperationId(
+	async reconcileOperationIds(
 		sessionId: string,
-		operationId: string,
-	): Promise<string[]> {
+		operationIds: readonly string[],
+	): Promise<ReadonlyMap<string, string[]>> {
 		const { session } = await this.openSession(sessionId);
-		return this.findAcknowledgedMessages(session, operationId);
+		return this.findAcknowledgedMessages(session, operationIds);
 	}
 
 	async cloneSession(sessionId: string, messageId: string): Promise<string> {
@@ -413,8 +413,9 @@ export class SdkHonchoMemoryClient
 
 	private async findAcknowledgedMessages(
 		session: HonchoSdkSession,
-		operationId: string,
-	): Promise<string[]> {
+		operationIds: readonly string[],
+	): Promise<ReadonlyMap<string, string[]>> {
+		const requested = new Set(operationIds);
 		const messages: unknown = await session.messages();
 		if (
 			!messages ||
@@ -422,7 +423,7 @@ export class SdkHonchoMemoryClient
 			!(Symbol.asyncIterator in messages)
 		)
 			throw new Error("Honcho returned a malformed message history");
-		const acknowledged: string[] = [];
+		const acknowledged = new Map<string, string[]>();
 		for await (const message of messages as AsyncIterable<unknown>) {
 			if (
 				!message ||
@@ -432,16 +433,20 @@ export class SdkHonchoMemoryClient
 				typeof message.metadata !== "object"
 			)
 				throw new Error("Honcho returned a malformed message history entry");
-			if (
-				"operationId" in message.metadata &&
-				message.metadata.operationId === operationId
-			)
-				acknowledged.push(
-					nonEmptyId(
-						"id" in message ? message.id : undefined,
-						"a reconciled message ID",
-					),
-				);
+			const operationId =
+				"operationId" in message.metadata
+					? message.metadata.operationId
+					: undefined;
+			if (typeof operationId !== "string" || !requested.has(operationId))
+				continue;
+			const messageIds = acknowledged.get(operationId) ?? [];
+			messageIds.push(
+				nonEmptyId(
+					"id" in message ? message.id : undefined,
+					"a reconciled message ID",
+				),
+			);
+			acknowledged.set(operationId, messageIds);
 		}
 		return acknowledged;
 	}
