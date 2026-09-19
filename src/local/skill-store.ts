@@ -462,7 +462,9 @@ export class SkillStore {
 	/**
 	 * Resolve a valid slug straight to `<root>/<slug>/SKILL.md` and validate
 	 * that path instead of scanning the whole tree. Symlinked skill directories
-	 * stay invisible, matching the tree scan used for listings.
+	 * stay invisible, matching the tree scan used for listings. Skills nested
+	 * deeper than the root (still discovered by the tree scan) fall back to the
+	 * recursive scan when the direct path misses.
 	 */
 	private async location(id: string): Promise<Location | undefined> {
 		const parsed = parseId(id);
@@ -478,17 +480,20 @@ export class SkillStore {
 		try {
 			const directoryStat = await lstat(directory);
 			const fileStat = await lstat(file);
-			if (!directoryStat.isDirectory() || !fileStat.isFile()) return undefined;
+			if (directoryStat.isDirectory() && fileStat.isFile())
+				return {
+					skillId: id,
+					scope: parsed.scope,
+					slug: parsed.slug,
+					path: file,
+					projectName: parsed.scope === "project" ? parsed.project : undefined,
+				};
 		} catch {
-			return undefined;
+			/* Direct path missed; fall back to the recursive scan below. */
 		}
-		return {
-			skillId: id,
-			scope: parsed.scope,
-			slug: parsed.slug,
-			path: file,
-			projectName: parsed.scope === "project" ? parsed.project : undefined,
-		};
+		return (await this.locations(parsed.scope)).find(
+			(item) => item.skillId === id,
+		);
 	}
 	private async read(location: Location): Promise<SkillDocument | null> {
 		try {
@@ -799,16 +804,27 @@ export class SkillStore {
 				error: "Project skills require an active project.",
 			};
 		try {
-			const target = await this.safePath(
+			let target = await this.safePath(
 				root,
 				parseId(doc.skillId)?.slug ?? "",
 				true,
 			);
-			if (resolve(target) !== resolve(doc.path))
-				return {
-					success: false,
-					error: "Skill path does not match its configured root.",
-				};
+			if (resolve(target) !== resolve(doc.path)) {
+				// Nested skills live below the canonical `<root>/<slug>` layout;
+				// accept their discovered path only when it stays inside the root.
+				const rootReal = await realpath(root).catch(() => resolve(root));
+				const parentReal = await realpath(dirname(doc.path)).catch(() => null);
+				if (
+					basename(doc.path) !== "SKILL.md" ||
+					!parentReal ||
+					!inside(rootReal, parentReal)
+				)
+					return {
+						success: false,
+						error: "Skill path does not match its configured root.",
+					};
+				target = doc.path;
+			}
 			const updated = {
 				...doc,
 				description,

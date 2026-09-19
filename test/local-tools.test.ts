@@ -1055,3 +1055,87 @@ test("session_search skips malformed JSONL and safely falls back from invalid FT
 		await rm(fixture.directory, { recursive: true, force: true });
 	}
 });
+
+test("session_search stops matching a listed session file that becomes unreadable", async () => {
+	let unreadable = false;
+	const fixture = await setup({
+		readSession: async (path) => {
+			if (unreadable)
+				throw Object.assign(new Error("vanished"), { code: "ENOENT" });
+			return readFile(path, "utf8");
+		},
+	});
+	try {
+		const path = await fixture.writeSession(
+			"vanishing.jsonl",
+			session("vanishing", "/work/alpha", [
+				{
+					id: "message",
+					timestamp: "2026-08-11T00:01:00.000Z",
+					role: "user",
+					content: "vanishing zebra sighting",
+				},
+			]),
+		);
+		assert.match(
+			(await fixture.search("search-1", { query: "zebra" })).content[0]
+				?.text ?? "",
+			/vanishing zebra sighting/,
+		);
+		await writeFile(
+			path,
+			session("vanishing", "/work/alpha", [
+				{
+					id: "message",
+					timestamp: "2026-08-11T00:02:00.000Z",
+					role: "user",
+					content: "replacement heron sighting",
+				},
+			]),
+		);
+		unreadable = true;
+		assert.doesNotMatch(
+			(await fixture.search("search-2", { query: "zebra" })).content[0]
+				?.text ?? "",
+			/vanishing zebra sighting/,
+		);
+		unreadable = false;
+		assert.match(
+			(await fixture.search("search-3", { query: "heron" })).content[0]
+				?.text ?? "",
+			/replacement heron sighting/,
+		);
+	} finally {
+		await rm(fixture.directory, { recursive: true, force: true });
+	}
+});
+
+test("concurrent session_search calls both succeed on the shared handle", async () => {
+	const fixture = await setup({
+		readSession: async (path) => {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			return readFile(path, "utf8");
+		},
+	});
+	try {
+		await fixture.writeSession(
+			"parallel.jsonl",
+			session("parallel", "/work/alpha", [
+				{
+					id: "message",
+					timestamp: "2026-08-11T00:01:00.000Z",
+					role: "user",
+					content: "parallel walrus query",
+				},
+			]),
+		);
+		const [first, second] = await Promise.all([
+			fixture.search("search-1", { query: "walrus" }),
+			fixture.search("search-2", { query: "walrus" }),
+		]);
+		assert.match(first.content[0]?.text ?? "", /parallel walrus query/);
+		assert.match(second.content[0]?.text ?? "", /parallel walrus query/);
+	} finally {
+		await rm(fixture.directory, { recursive: true, force: true });
+	}
+});

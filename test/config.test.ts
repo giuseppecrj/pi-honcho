@@ -6,6 +6,7 @@ import test from "node:test";
 
 import { resolveHonchoConfig } from "../src/remote/config.js";
 import {
+	saveHonchoOAuthTokens,
 	saveHonchoSettings,
 	withHonchoOAuthTokens,
 } from "../src/remote/config-file.js";
@@ -411,4 +412,49 @@ test("merges refreshed OAuth tokens into the in-memory config file", () => {
 	assert.deepEqual(withHonchoOAuthTokens(undefined, tokens), {
 		oauth: tokens,
 	});
+});
+
+test("saveHonchoOAuthTokens returns the exact merged config it persisted", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-honcho-config-"));
+	const previousHome = process.env.HOME;
+	const previousUserProfile = process.env.USERPROFILE;
+	process.env.HOME = root;
+	process.env.USERPROFILE = root;
+
+	try {
+		const path = join(root, ".honcho", "config.json");
+		await mkdir(join(root, ".honcho"), { recursive: true });
+		await writeFile(
+			path,
+			`${JSON.stringify(
+				{
+					hosts: { "pi-honcho": { workspaceId: "pi" } },
+					oauth: { accessToken: "old-access-token" },
+				},
+				null,
+				2,
+			)}\n`,
+			"utf8",
+		);
+		const tokens = {
+			accessToken: "new-access-token",
+			refreshToken: "new-refresh-token",
+			accessExpiresAt: 3_600_000,
+			clientId: "honcho-cli",
+			scope: "write",
+			host: "https://api.honcho.dev",
+		};
+		const persisted = await saveHonchoOAuthTokens(tokens);
+		assert.deepEqual(persisted, {
+			hosts: { "pi-honcho": { workspaceId: "pi" } },
+			oauth: tokens,
+		});
+		assert.deepEqual(JSON.parse(await readFile(path, "utf8")), persisted);
+	} finally {
+		if (previousHome === undefined) delete process.env.HOME;
+		else process.env.HOME = previousHome;
+		if (previousUserProfile === undefined) delete process.env.USERPROFILE;
+		else process.env.USERPROFILE = previousUserProfile;
+		await rm(root, { recursive: true, force: true });
+	}
 });
