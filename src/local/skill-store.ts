@@ -20,6 +20,7 @@ import {
 	resolve,
 } from "node:path";
 
+import { debugTimer } from "../debug.js";
 import { scanContent } from "./content-scanner.js";
 
 const SLUG = /^[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]?$/;
@@ -509,17 +510,23 @@ export class SkillStore {
 		}
 	}
 	async loadIndex(scope?: SkillScope): Promise<SkillIndex[]> {
+		const done = debugTimer("honcho:local", "skills.load_index");
 		const docs = await Promise.all(
 			(await this.locations(scope)).map((x) => this.read(x)),
 		);
-		return docs
+		const index = docs
 			.filter((x): x is SkillDocument => Boolean(x))
 			.map(({ body: _body, version: _version, ...index }) => index)
 			.slice(0, 500);
+		done({ count: index.length });
+		return index;
 	}
 	async loadSkill(id: string): Promise<SkillDocument | null> {
+		const done = debugTimer("honcho:local", "skills.load_skill");
 		const location = await this.location(id);
-		return location ? this.read(location) : null;
+		const doc = location ? await this.read(location) : null;
+		done({ found: Boolean(doc) });
+		return doc;
 	}
 
 	private async piSkillPaths(cwd?: string): Promise<string[]> {
@@ -613,9 +620,9 @@ export class SkillStore {
 				conflictType: "name-collision",
 				suggestedAction: "rename",
 			};
-		const index = (
-			await Promise.all(snapshot.map((x) => this.read(x)))
-		).filter((x): x is SkillDocument => Boolean(x));
+		const index = (await Promise.all(snapshot.map((x) => this.read(x)))).filter(
+			(x): x is SkillDocument => Boolean(x),
+		);
 		const candidates = index.filter(
 			(x) =>
 				similarity(slug.replaceAll("-", " "), x.name.replaceAll("-", " ")) >=

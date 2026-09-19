@@ -15,6 +15,7 @@ import { basename, dirname, join } from "node:path";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { debugLog } from "../debug.js";
 import { scanContent } from "./content-scanner.js";
 
 export const STANDING_FILE = "STANDING.md";
@@ -214,10 +215,22 @@ export class StandingInstructions {
 			const recentlyWritten =
 				BigInt(Date.now()) * 1_000_000n - stats.mtimeNs <
 				RECENT_WRITE_WINDOW_NS;
-			if (this.loaded && !recentlyWritten && key === this.cacheKey) return;
+			if (this.loaded && !recentlyWritten && key === this.cacheKey)
+				return debugLog("honcho:local", "standing_instructions.load", {
+					cacheHit: true,
+				});
 			this.instructions = parseInstructions(
 				await this.fs.readFile(this.filePath),
 			);
+			debugLog("honcho:local", "standing_instructions.load", {
+				cacheHit: false,
+				reason: !this.loaded
+					? "first_load"
+					: recentlyWritten
+						? "recent_write"
+						: "stat_change",
+				count: this.instructions.length,
+			});
 			this.cacheKey = key;
 		} catch {
 			this.instructions = [];

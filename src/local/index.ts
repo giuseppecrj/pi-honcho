@@ -8,6 +8,7 @@ import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { debugLog } from "../debug.js";
 import { SkillStore } from "./skill-store.js";
 import { registerSkillTool } from "./skill-tool.js";
 import { registerStandingInstructions } from "./standing-instructions.js";
@@ -387,6 +388,8 @@ async function indexSessions(
 ): Promise<void> {
 	const files = await sessionFiles(sessionsDir);
 	const seen = new Set(files);
+	let rescanned = 0;
+	let skippedClean = 0;
 	for (const path of files) {
 		try {
 			const stats = await stat(path, { bigint: true });
@@ -396,12 +399,17 @@ async function indexSessions(
 				ctimeNs: stats.ctimeNs.toString(),
 			};
 			const statKey = `${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`;
-			if (cleanFiles.get(path) === statKey) continue;
+			if (cleanFiles.get(path) === statKey) {
+				skippedClean += 1;
+				continue;
+			}
 			if (unchanged(db, path, metadata)) {
 				cleanFiles.set(path, statKey);
+				skippedClean += 1;
 				continue;
 			}
 			const content = await readSession(path);
+			rescanned += 1;
 			const fingerprint = createHash("sha256").update(content).digest("hex");
 			if (contentChanged(db, path, fingerprint)) {
 				const session = parseSession(content);
@@ -432,6 +440,11 @@ async function indexSessions(
 		if (!seen.has(path))
 			db.prepare("DELETE FROM session_files WHERE path = ?").run(path);
 	}
+	debugLog("honcho:local", "session_search.index", {
+		files: files.length,
+		rescanned,
+		skippedClean,
+	});
 }
 
 const FTS5_OPERATOR = /\b(?:OR|AND|NOT|NEAR)\b/;
@@ -674,6 +687,7 @@ Returns bounded conversation snippets with session dates and project context. La
 					message: "query is required",
 				});
 			try {
+				debugLog("honcho:local", "session_search.db", { reused: Boolean(db) });
 				const database = await getDatabase();
 				await indexSessions(
 					database,
@@ -702,7 +716,12 @@ Returns bounded conversation snippets with session dates and project context. La
 					100,
 					MAX_SNIPPET_CHARS,
 				);
+				const queryStart = Date.now();
 				const results = search(database, input, limit);
+				debugLog("honcho:local", "session_search.query", {
+					ms: Date.now() - queryStart,
+					count: results.length,
+				});
 				if (!results.length)
 					return toolResult(
 						"No results found. Try a different search term or broader query.",

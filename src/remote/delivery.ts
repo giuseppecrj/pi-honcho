@@ -1,3 +1,4 @@
+import { debugTimer } from "../debug.js";
 import { type FinalizedExchange, safeExchange } from "./exchange.js";
 
 export interface HonchoExchangeClient {
@@ -93,6 +94,11 @@ export class ExchangeDeliveryQueue {
 	}
 
 	private async deliverPending(): Promise<void> {
+		const done = debugTimer("honcho:remote", "delivery.flush", {
+			pending: this.pending.length,
+		});
+		let delivered = 0;
+		let reconcileFetches = 0;
 		// One remote history fetch per flush resolves every attempted exchange.
 		let reconciled:
 			| {
@@ -112,6 +118,7 @@ export class ExchangeDeliveryQueue {
 						const operationIds = this.pending
 							.filter((item) => item.attempted)
 							.map((item) => item.exchange.operationId);
+						reconcileFetches += 1;
 						reconciled = {
 							requested: new Set(operationIds),
 							messageIds: await recoveryClient.reconcileOperationIds(
@@ -135,9 +142,12 @@ export class ExchangeDeliveryQueue {
 					messageIds: acknowledged,
 				});
 				this.pending.shift();
+				delivered += 1;
 			} catch {
+				done({ delivered, failed: this.pending.length, reconcileFetches });
 				return;
 			}
 		}
+		done({ delivered, failed: 0, reconcileFetches });
 	}
 }
