@@ -13,6 +13,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import localKnowledgeTools from "../src/local/index.js";
+import { SkillStore } from "../src/local/skill-store.js";
 
 type RegisteredTool = {
 	name: string;
@@ -643,6 +644,169 @@ test("linked worktrees share the main repository project skill root", async () =
 		);
 	} finally {
 		await cleanup(root);
+	}
+});
+
+test("nested skills are listed, viewable, and patchable", async () => {
+	const fixture = await setup({ project: false });
+	try {
+		const nested = join(fixture.global, "nested", "deep-skill");
+		await mkdir(nested, { recursive: true });
+		await writeFile(
+			join(nested, "SKILL.md"),
+			`---\nname: deep-skill\ndescription: Nested skill\n---\n## Procedure\n1. old\n`,
+		);
+		const list = await output(fixture.tool, { action: "view" });
+		assert.ok(
+			(list.skills as Array<{ skillId: string }>).some(
+				(item) => item.skillId === "global:deep-skill",
+			),
+		);
+		const viewed = await output(fixture.tool, {
+			action: "view",
+			skill_id: "global:deep-skill",
+		});
+		assert.equal(viewed.success, true);
+		assert.equal(viewed.body, "## Procedure\n1. old");
+		const patched = await output(fixture.tool, {
+			action: "patch",
+			skill_id: "global:deep-skill",
+			section: "Procedure",
+			content: "1. new",
+		});
+		assert.equal(patched.success, true);
+		const text = await readFile(join(nested, "SKILL.md"), "utf8");
+		assert.ok(text.includes("1. new"));
+		await assert.rejects(
+			access(join(fixture.global, "deep-skill", "SKILL.md")),
+			"patch must write to the nested path, not a new top-level copy",
+		);
+	} finally {
+		await cleanup(fixture.root);
+	}
+});
+
+test("nested skills can be deleted", async () => {
+	const fixture = await setup({ project: false });
+	try {
+		const nested = join(fixture.global, "nested", "deep-skill");
+		await mkdir(nested, { recursive: true });
+		await writeFile(
+			join(nested, "SKILL.md"),
+			`---\nname: deep-skill\ndescription: Nested skill\n---\n## Procedure\n1. old\n`,
+		);
+		const deleted = await output(fixture.tool, {
+			action: "delete",
+			skill_id: "global:deep-skill",
+		});
+		assert.equal(deleted.success, true);
+		await assert.rejects(access(join(nested, "SKILL.md")));
+		const list = await output(fixture.tool, { action: "view" });
+		assert.ok(
+			!(list.skills as Array<{ skillId: string }>).some(
+				(item) => item.skillId === "global:deep-skill",
+			),
+		);
+	} finally {
+		await cleanup(fixture.root);
+	}
+});
+
+test("delete rejects a skill path that escapes its root via symlink", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-honcho-skills-"));
+	try {
+		const global = join(root, "global");
+		const outside = join(root, "outside", "evil-skill");
+		await mkdir(global, { recursive: true });
+		await mkdir(outside, { recursive: true });
+		const file = join(outside, "SKILL.md");
+		await writeFile(
+			file,
+			`---\nname: evil-skill\ndescription: Escaping skill\n---\n## Procedure\n1. bad\n`,
+		);
+		await symlink(join(root, "outside"), join(global, "nested"));
+		const store = new SkillStore({ globalSkillsDir: global });
+		// The tree scan skips symlinked directories, so force discovery of the
+		// escaping path to exercise delete's containment check directly.
+		const escaped = join(global, "nested", "evil-skill", "SKILL.md");
+		(store as unknown as { loadSkill(id: string): unknown }).loadSkill =
+			async () => ({
+				skillId: "global:evil-skill",
+				scope: "global",
+				fileName: "SKILL.md",
+				path: escaped,
+				name: "evil-skill",
+				description: "Escaping skill",
+				created: "2026-01-01",
+				updated: "2026-01-01",
+				body: "## Procedure\n1. bad",
+				version: 1,
+			});
+		const result = await store.delete("global:evil-skill");
+		assert.equal(result.success, false);
+		assert.equal(
+			result.error,
+			"Skill path does not match its configured root.",
+		);
+		await access(file);
+	} finally {
+		await cleanup(root);
+	}
+});
+
+test("view resolves a skill id directly and sees external edits immediately", async () => {
+	const fixture = await setup();
+	try {
+		await output(fixture.tool, {
+			action: "create",
+			name: "fresh-skill",
+			description: "A fresh skill",
+			scope: "global",
+			content: "## Procedure\n1. original",
+		});
+		await writeFile(
+			join(fixture.global, "fresh-skill", "SKILL.md"),
+			`---\nname: fresh-skill\ndescription: Edited outside\n---\nExternal body\n`,
+		);
+		const viewed = await output(fixture.tool, {
+			action: "view",
+			skill_id: "global:fresh-skill",
+		});
+		assert.equal(viewed.success, true);
+		assert.equal(viewed.description, "Edited outside");
+		assert.equal(viewed.body, "External body");
+	} finally {
+		await cleanup(fixture.root);
+	}
+});
+
+test("create detects a duplicate skill added externally after earlier operations", async () => {
+	const fixture = await setup();
+	try {
+		await output(fixture.tool, {
+			action: "create",
+			name: "unrelated-workflow",
+			description: "An unrelated workflow",
+			scope: "global",
+			content: "safe",
+		});
+		await mkdir(join(fixture.global, "late-addition"), { recursive: true });
+		await writeFile(
+			join(fixture.global, "late-addition", "SKILL.md"),
+			`---\nname: late-addition\ndescription: Added externally\n---\nbody`,
+		);
+		const result = await output(fixture.tool, {
+			action: "create",
+			name: "late-addition",
+			description: "x",
+			scope: "global",
+			content: "safe",
+		});
+		assert.equal(result.success, false);
+		assert.equal(result.conflictType, "duplicate");
+		assert.match(String(result.error), /already exists/);
+	} finally {
+		await cleanup(fixture.root);
 	}
 });
 

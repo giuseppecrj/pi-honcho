@@ -7,6 +7,7 @@ import {
 	readFile,
 	rename,
 	rm,
+	stat,
 	writeFile,
 } from "node:fs/promises";
 import { homedir } from "node:os";
@@ -14,6 +15,7 @@ import { basename, dirname, join } from "node:path";
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
+import { debugLog } from "../debug.js";
 import { scanContent } from "./content-scanner.js";
 
 export const STANDING_FILE = "STANDING.md";
@@ -24,6 +26,9 @@ const HERMES_DIR = "pi-hermes-memory";
 const HERMES_CONFIG_FILE = "hermes-memory-config.json";
 const MUTATION_WAIT_MS = 5_000;
 const MUTATION_RETRY_MS = 10;
+/** Files modified this recently are re-read despite a matching stat key, because
+ * filesystem timestamp granularity can hide back-to-back same-size rewrites. */
+const RECENT_WRITE_WINDOW_NS = 2_000_000_000n;
 const SUBCOMMANDS = ["list", "remove", "clear"] as const;
 
 export type StandingInstructionResult = {
@@ -57,6 +62,8 @@ type StandingFs = {
 	mkdir: (path: string) => Promise<void>;
 	/** When true, use injected writeFile instead of real atomic rename. */
 	injectWrites: boolean;
+	/** When true, always re-read via injected readFile instead of the stat-gated cache. */
+	injectReads: boolean;
 };
 
 function defaultAgentDir(agentDir?: string): string {
@@ -147,6 +154,7 @@ export function parseInstructions(raw: string): string[] {
 export class StandingInstructions {
 	private instructions: string[] = [];
 	private loaded = false;
+	private cacheKey: string | undefined;
 	private readonly filePath: string;
 	private readonly maxEntries: number;
 	private readonly maxChars: number;
@@ -165,6 +173,7 @@ export class StandingInstructions {
 				options.mkdir ??
 				((path) => mkdir(path, { recursive: true }).then(() => undefined)),
 			injectWrites: Boolean(options.writeFile),
+			injectReads: Boolean(options.readFile),
 		};
 	}
 
@@ -183,13 +192,51 @@ export class StandingInstructions {
 	/**
 	 * Fail open for injection: missing, empty, unreadable, or malformed storage
 	 * yields no instructions and never erases the file.
+	 *
+	 * Reads are stat-gated: the file is re-read and re-parsed only when its
+	 * size/mtime/ctime changed, so external manual edits are always picked up
+	 * without paying a full read on every agent turn.
 	 */
 	async load(): Promise<void> {
+		if (this.fs.injectReads) {
+			try {
+				this.instructions = parseInstructions(
+					await this.fs.readFile(this.filePath),
+				);
+			} catch {
+				this.instructions = [];
+			}
+			this.loaded = true;
+			return;
+		}
 		try {
-			const raw = await this.fs.readFile(this.filePath);
-			this.instructions = parseInstructions(raw);
+			const stats = await stat(this.filePath, { bigint: true });
+			// Accepted limitation: a same-size rewrite that also preserves mtime and
+			// ctime (not achievable with normal tooling) is not detected as a change.
+			const key = `${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`;
+			const recentlyWritten =
+				BigInt(Date.now()) * 1_000_000n - stats.mtimeNs <
+				RECENT_WRITE_WINDOW_NS;
+			if (this.loaded && !recentlyWritten && key === this.cacheKey)
+				return debugLog("honcho:local", "standing_instructions.load", {
+					cacheHit: true,
+				});
+			this.instructions = parseInstructions(
+				await this.fs.readFile(this.filePath),
+			);
+			debugLog("honcho:local", "standing_instructions.load", {
+				cacheHit: false,
+				reason: !this.loaded
+					? "first_load"
+					: recentlyWritten
+						? "recent_write"
+						: "stat_change",
+				count: this.instructions.length,
+			});
+			this.cacheKey = key;
 		} catch {
 			this.instructions = [];
+			this.cacheKey = undefined;
 		}
 		this.loaded = true;
 	}
@@ -199,6 +246,7 @@ export class StandingInstructions {
 	 * error aborts so /memory-pin cannot overwrite unknown existing rules.
 	 */
 	private async loadForMutation(): Promise<void> {
+		this.cacheKey = undefined;
 		try {
 			const raw = await this.fs.readFile(this.filePath);
 			this.instructions = parseInstructions(raw);
@@ -529,7 +577,8 @@ export function registerStandingInstructions(
 
 	if (typeof pi.on === "function") {
 		pi.on("before_agent_start", async (event: { systemPrompt?: string }) => {
-			// Re-load every turn so manual disk edits and /memory-pin writes apply.
+			// Stat-gated re-load every turn so manual disk edits and /memory-pin
+			// writes apply without re-reading an unchanged file.
 			await store.load();
 			const block = store.formatForSystemPrompt();
 			if (!block) return;

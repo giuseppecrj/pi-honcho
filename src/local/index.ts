@@ -8,6 +8,7 @@ import { basename, dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 
+import { debugLog } from "../debug.js";
 import { SkillStore } from "./skill-store.js";
 import { registerSkillTool } from "./skill-tool.js";
 import { registerStandingInstructions } from "./standing-instructions.js";
@@ -69,10 +70,12 @@ type SearchRow = {
 	entry_id: string;
 };
 
+type SqliteRow = Record<string, unknown>;
+
 type Statement = {
-	all(...params: unknown[]): unknown[];
-	get(...params: unknown[]): unknown;
-	run(...params: unknown[]): unknown;
+	all(...params: unknown[]): SqliteRow[];
+	get(...params: unknown[]): SqliteRow | undefined;
+	run(...params: unknown[]): void;
 };
 
 type Database = {
@@ -381,9 +384,12 @@ async function indexSessions(
 	db: Database,
 	sessionsDir: string,
 	readSession: (path: string) => Promise<string>,
+	cleanFiles: Map<string, string>,
 ): Promise<void> {
 	const files = await sessionFiles(sessionsDir);
 	const seen = new Set(files);
+	let rescanned = 0;
+	let skippedClean = 0;
 	for (const path of files) {
 		try {
 			const stats = await stat(path, { bigint: true });
@@ -392,8 +398,20 @@ async function indexSessions(
 				mtimeNs: stats.mtimeNs.toString(),
 				ctimeNs: stats.ctimeNs.toString(),
 			};
-			if (unchanged(db, path, metadata)) continue;
+			// Accepted limitation: a same-size rewrite that also preserves mtime and
+			// ctime (not achievable with normal tooling) is not detected as a change.
+			const statKey = `${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`;
+			if (cleanFiles.get(path) === statKey) {
+				skippedClean += 1;
+				continue;
+			}
+			if (unchanged(db, path, metadata)) {
+				cleanFiles.set(path, statKey);
+				skippedClean += 1;
+				continue;
+			}
 			const content = await readSession(path);
+			rescanned += 1;
 			const fingerprint = createHash("sha256").update(content).digest("hex");
 			if (contentChanged(db, path, fingerprint)) {
 				const session = parseSession(content);
@@ -409,10 +427,17 @@ async function indexSessions(
 					metadata.ctimeNs,
 					path,
 				);
+			cleanFiles.set(path, statKey);
 		} catch {
-			// Unreadable or disappearing files are skipped; the next search can retry.
+			// Unreadable or disappearing files are skipped; the next search can
+			// retry. Dropping the path from `seen` and the clean-file cache lets the
+			// cleanup below delete its stale indexed rows.
+			cleanFiles.delete(path);
+			seen.delete(path);
 		}
 	}
+	for (const path of cleanFiles.keys())
+		if (!seen.has(path)) cleanFiles.delete(path);
 	const indexed = db.prepare("SELECT path FROM session_files").all() as Array<{
 		path: string;
 	}>;
@@ -420,6 +445,11 @@ async function indexSessions(
 		if (!seen.has(path))
 			db.prepare("DELETE FROM session_files WHERE path = ?").run(path);
 	}
+	debugLog("honcho:local", "session_search.index", {
+		files: files.length,
+		rescanned,
+		skippedClean,
+	});
 }
 
 const FTS5_OPERATOR = /\b(?:OR|AND|NOT|NEAR)\b/;
@@ -475,18 +505,17 @@ function rowsFor(
 		values.push(input.role);
 	}
 	values.push(limit);
-	return db
-		.prepare(
-			`WITH matching AS (
-				SELECT m.project, m.role, m.content, m.timestamp, m.source_path, m.entry_id,
-					ROW_NUMBER() OVER (PARTITION BY m.logical_id ORDER BY m.timestamp DESC, m.source_path ASC) AS result_rank
-				FROM messages m WHERE ${conditions.join(" AND ")}
-			)
-			SELECT project, role, content, timestamp, source_path, entry_id FROM matching
-			WHERE result_rank = 1
-			ORDER BY timestamp DESC, source_path ASC, entry_id ASC LIMIT ?`,
+	// conditions holds only fixed SQL fragments; every user-supplied value is
+	// bound through a ? placeholder in values.
+	const sql = `WITH matching AS (
+			SELECT m.project, m.role, m.content, m.timestamp, m.source_path, m.entry_id,
+				ROW_NUMBER() OVER (PARTITION BY m.logical_id ORDER BY m.timestamp DESC, m.source_path ASC) AS result_rank
+			FROM messages m WHERE ${conditions.join(" AND ")}
 		)
-		.all(...values) as SearchRow[];
+		SELECT project, role, content, timestamp, source_path, entry_id FROM matching
+		WHERE result_rank = 1
+		ORDER BY timestamp DESC, source_path ASC, entry_id ASC LIMIT ?`;
+	return db.prepare(sql).all(...values) as SearchRow[];
 }
 
 function search(db: Database, input: SearchInput, limit: number): SearchRow[] {
@@ -587,6 +616,113 @@ export default function localKnowledgeTools(
 
 	const readSession =
 		options.readSession ?? ((path: string) => readFile(path, "utf8"));
+	// The handle and per-file stat cache live for the extension's lifetime so a
+	// search does not reopen SQLite, rerun schema init, or recheck unchanged
+	// session files on every call. External session writes change file stats and
+	// are picked up; any failure resets both so the next call starts clean.
+	let db: Database | undefined;
+	const cleanFiles = new Map<string, string>();
+	async function getDatabase(): Promise<Database> {
+		if (db) return db;
+		await mkdir(dirname(paths.databasePath), { recursive: true });
+		const opened = await openDatabase(paths.databasePath);
+		opened.exec("PRAGMA busy_timeout = 5000");
+		initialize(opened);
+		db = opened;
+		return opened;
+	}
+	function resetDatabase(): void {
+		try {
+			db?.close();
+		} catch {
+			// The handle may already be unusable; dropping it is enough.
+		}
+		db = undefined;
+		cleanFiles.clear();
+	}
+	// Searches run one at a time: concurrent calls share the SQLite handle, so
+	// serializing them keeps open/reset atomic — a second call can neither open
+	// a duplicate handle nor reset one the first call is still using.
+	let searchChain: Promise<unknown> = Promise.resolve();
+	async function runSearch(input: SearchInput) {
+		try {
+			debugLog("honcho:local", "session_search.db", { reused: Boolean(db) });
+			const database = await getDatabase();
+			await indexSessions(database, paths.sessionsDir, readSession, cleanFiles);
+			const total = (
+				database.prepare("SELECT COUNT(*) AS count FROM messages").get() as {
+					count: number;
+				}
+			).count;
+			if (!total)
+				return toolResult(
+					"No sessions indexed yet. Pi JSONL sessions are indexed automatically when available.",
+					{
+						success: false,
+						message:
+							"No sessions indexed yet. Pi JSONL sessions are indexed automatically when available.",
+					},
+				);
+			const limit = bounded(input.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
+			const snippetChars = bounded(
+				input.snippetChars,
+				DEFAULT_SNIPPET_CHARS,
+				100,
+				MAX_SNIPPET_CHARS,
+			);
+			const queryStart = Date.now();
+			const results = search(database, input, limit);
+			debugLog("honcho:local", "session_search.query", {
+				ms: Date.now() - queryStart,
+				count: results.length,
+			});
+			if (!results.length)
+				return toolResult(
+					"No results found. Try a different search term or broader query.",
+					{
+						success: true,
+						count: 0,
+						message:
+							"No results found. Try a different search term or broader query.",
+					},
+				);
+			let truncatedCount = 0;
+			const blocks = results.map((result) => {
+				const truncated = result.content.length > snippetChars;
+				if (truncated) truncatedCount += 1;
+				const snippet = truncated
+					? `${result.content.slice(0, snippetChars)}\n... (truncated, ${result.content.length} chars total — refine the query or increase snippetChars)`
+					: result.content;
+				const date = new Date(result.timestamp).toLocaleDateString("en-US", {
+					year: "numeric",
+					month: "short",
+					day: "numeric",
+				});
+				return [
+					"---",
+					`📅 ${date} | 📁 ${result.project} | ${result.role === "user" ? "👤 User" : "🤖 Assistant"}`,
+					snippet,
+				].join("\n");
+			});
+			const output = capOutput(
+				`Found ${results.length} results for "${input.query}":\n\n${blocks.join("\n\n")}`,
+			);
+			return toolResult(output.text, {
+				success: true,
+				count: results.length,
+				truncatedCount,
+				snippetChars,
+				outputChars: output.text.length,
+				outputTruncated: output.truncated,
+			});
+		} catch (error) {
+			resetDatabase();
+			return toolResult(
+				`Session search unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
+				{ success: false, message: "Session search unavailable" },
+			);
+		}
+	}
 	pi.registerTool({
 		name: "session_search",
 		label: "Session Search",
@@ -638,82 +774,9 @@ Returns bounded conversation snippets with session dates and project context. La
 					success: false,
 					message: "query is required",
 				});
-			let db: Database | undefined;
-			try {
-				await mkdir(dirname(paths.databasePath), { recursive: true });
-				db = await openDatabase(paths.databasePath);
-				db.exec("PRAGMA busy_timeout = 5000");
-				initialize(db);
-				await indexSessions(db, paths.sessionsDir, readSession);
-				const total = (
-					db.prepare("SELECT COUNT(*) AS count FROM messages").get() as {
-						count: number;
-					}
-				).count;
-				if (!total)
-					return toolResult(
-						"No sessions indexed yet. Pi JSONL sessions are indexed automatically when available.",
-						{
-							success: false,
-							message:
-								"No sessions indexed yet. Pi JSONL sessions are indexed automatically when available.",
-						},
-					);
-				const limit = bounded(input.limit, DEFAULT_LIMIT, 1, MAX_LIMIT);
-				const snippetChars = bounded(
-					input.snippetChars,
-					DEFAULT_SNIPPET_CHARS,
-					100,
-					MAX_SNIPPET_CHARS,
-				);
-				const results = search(db, input, limit);
-				if (!results.length)
-					return toolResult(
-						"No results found. Try a different search term or broader query.",
-						{
-							success: true,
-							count: 0,
-							message:
-								"No results found. Try a different search term or broader query.",
-						},
-					);
-				let truncatedCount = 0;
-				const blocks = results.map((result) => {
-					const truncated = result.content.length > snippetChars;
-					if (truncated) truncatedCount += 1;
-					const snippet = truncated
-						? `${result.content.slice(0, snippetChars)}\n... (truncated, ${result.content.length} chars total — refine the query or increase snippetChars)`
-						: result.content;
-					const date = new Date(result.timestamp).toLocaleDateString("en-US", {
-						year: "numeric",
-						month: "short",
-						day: "numeric",
-					});
-					return [
-						"---",
-						`📅 ${date} | 📁 ${result.project} | ${result.role === "user" ? "👤 User" : "🤖 Assistant"}`,
-						snippet,
-					].join("\n");
-				});
-				const output = capOutput(
-					`Found ${results.length} results for "${input.query}":\n\n${blocks.join("\n\n")}`,
-				);
-				return toolResult(output.text, {
-					success: true,
-					count: results.length,
-					truncatedCount,
-					snippetChars,
-					outputChars: output.text.length,
-					outputTruncated: output.truncated,
-				});
-			} catch (error) {
-				return toolResult(
-					`Session search unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
-					{ success: false, message: "Session search unavailable" },
-				);
-			} finally {
-				db?.close();
-			}
+			const run = searchChain.then(() => runSearch(input));
+			searchChain = run.catch(() => undefined);
+			return run;
 		},
 	});
 }

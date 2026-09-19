@@ -1,3 +1,5 @@
+import { readFile } from "node:fs/promises"; // pi-lens-ignore: find-import-file-without-extension
+
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
@@ -6,6 +8,7 @@ import {
 } from "@earendil-works/pi-coding-agent"; // pi-lens-ignore: find-import-file-without-extension
 import { Type } from "typebox";
 
+import { debugLog, debugTimer } from "../debug.js";
 import {
 	type HonchoForkClient,
 	type HonchoToolClient,
@@ -78,31 +81,64 @@ import { formatStatusDetails, type StatusDetails } from "./status-details.js";
 import {
 	isWorkspaceResetEntry,
 	resetRecovery,
+	type TimedResetEntry,
 	WORKSPACE_RESET_ENTRY_KEY,
 } from "./workspace-reset.js";
 
 const STATUS_KEY = "pi-honcho";
 const FLUSH_TIMEOUT_MS = 2_000;
+const RESET_SCAN_CONCURRENCY = 8;
 const inMemoryForkHandoffs = new InMemoryForkHandoffs();
+
+async function sessionResetEntries(
+	path: string,
+	counters: { parsed: number },
+): Promise<TimedResetEntry[]> {
+	try {
+		// A raw-byte marker scan avoids entry-parsing sessions that cannot
+		// contain a workspace-reset entry.
+		const raw = await readFile(path);
+		if (!raw.includes(WORKSPACE_RESET_ENTRY_KEY)) return [];
+	} catch {
+		// Fall through to entry parsing when the raw bytes are unavailable.
+	}
+	counters.parsed += 1;
+	return SessionManager.open(path)
+		.getEntries()
+		.flatMap((entry) =>
+			entry.type === "custom" &&
+			entry.customType === WORKSPACE_RESET_ENTRY_KEY &&
+			isWorkspaceResetEntry(entry.data)
+				? [{ data: entry.data, timestamp: entry.timestamp }]
+				: [],
+		);
+}
 
 async function persistedResetRecovery(
 	workspaceId: string,
 ): Promise<StartupRecovery> {
+	const done = debugTimer("honcho:remote", "persistedResetRecovery");
 	const sessions = await SessionManager.listAll();
-	const resetEntries = await Promise.all(
-		sessions.map((session) =>
-			SessionManager.open(session.path)
-				.getEntries()
-				.flatMap((entry) =>
-					entry.type === "custom" &&
-					entry.customType === WORKSPACE_RESET_ENTRY_KEY &&
-					isWorkspaceResetEntry(entry.data)
-						? [{ data: entry.data, timestamp: entry.timestamp }]
-						: [],
-				),
-		),
-	);
-	return resetRecovery(workspaceId, resetEntries.flat());
+	const counters = { parsed: 0 };
+	const resetEntries: TimedResetEntry[] = [];
+	for (
+		let index = 0;
+		index < sessions.length;
+		index += RESET_SCAN_CONCURRENCY
+	) {
+		const batch = await Promise.all(
+			sessions
+				.slice(index, index + RESET_SCAN_CONCURRENCY)
+				.map((session) => sessionResetEntries(session.path, counters)),
+		);
+		resetEntries.push(...batch.flat());
+	}
+	done({
+		filesScanned: sessions.length,
+		parsed: counters.parsed,
+		resetEntries: resetEntries.length,
+	});
+	return resetRecovery(workspaceId, resetEntries);
 }
 
 function remoteSessionIdForStartup(
@@ -267,8 +303,20 @@ async function resolveStartupConfiguration(
 	const oauth = oauthTokensForHost(configFile, baseUrl);
 	if (oauth && !validOAuthAccessToken(configFile, baseUrl)) {
 		const refreshed = await refreshOAuthTokens(oauth);
-		if (refreshed && (await saveHonchoOAuthTokens(refreshed)))
-			configFile = await loadHonchoConfigFile();
+		debugLog("honcho:remote", "oauth.refresh", {
+			refreshed: Boolean(refreshed),
+		});
+		if (refreshed) {
+			// Adopt exactly what was persisted so memory and disk cannot diverge
+			// when another process rewrote the config file in between.
+			const persisted = await saveHonchoOAuthTokens(refreshed);
+			if (persisted) configFile = persisted;
+		}
+	} else if (oauth) {
+		debugLog("honcho:remote", "oauth.refresh", {
+			skipped: true,
+			reason: "token_valid",
+		});
 	}
 	const configured = resolveHonchoConfig(
 		process.env,
@@ -371,6 +419,8 @@ export default function honchoMemory(
 	let memoryGeneration = 0;
 	let submittedPrompt: string | undefined;
 	let entryIdsBeforeRun = new Set<string>();
+	let trackedSessionId: string | undefined;
+	let trackedEntryCount = 0;
 	let resetBlocked = false;
 	let awaitingRemoteRecreation = false;
 	let privacyDisabled = false;
@@ -535,13 +585,15 @@ export default function honchoMemory(
 	}
 
 	pi.on("session_start", async (event, ctx) => {
+		const done = debugTimer("honcho:remote", "session_start.initialize");
 		setHonchoTools(false);
-		await initialize(
+		const status = await initialize(
 			ctx,
 			undefined,
 			event.reason === "fork",
 			event.previousSessionFile,
 		);
+		done({ status: status.kind, fork: event.reason === "fork" });
 	});
 
 	async function flushDelivery(): Promise<void> {
@@ -550,9 +602,23 @@ export default function honchoMemory(
 
 	pi.on("before_agent_start", (event, ctx) => {
 		submittedPrompt = event.prompt;
-		entryIdsBeforeRun = new Set(
-			ctx.sessionManager.getEntries().map((entry) => entry.id),
-		);
+		// Sessions are append-only, so only entries added since the last turn
+		// need indexing; a session change or shrink invalidates the tracker.
+		const entries = ctx.sessionManager.getEntries();
+		const sessionId = ctx.sessionManager.getSessionId();
+		if (sessionId !== trackedSessionId || entries.length < trackedEntryCount) {
+			trackedSessionId = sessionId;
+			trackedEntryCount = 0;
+			entryIdsBeforeRun = new Set();
+		}
+		const startCount = trackedEntryCount;
+		for (; trackedEntryCount < entries.length; trackedEntryCount += 1) {
+			const entry = entries[trackedEntryCount];
+			if (entry) entryIdsBeforeRun.add(entry.id);
+		}
+		debugLog("honcho:remote", "before_agent_start", {
+			newEntriesIndexed: entries.length - startCount,
+		});
 	});
 
 	pi.on("agent_settled", (_event, ctx) => {
@@ -563,7 +629,11 @@ export default function honchoMemory(
 			ctx.sessionManager.getBranch(),
 			entryIdsBeforeRun,
 		);
-		if (!assistant) return;
+		if (!assistant)
+			return debugLog("honcho:remote", "agent_settled", {
+				queued: false,
+				reason: "no_assistant",
+			});
 		const exchange = safeExchange({
 			operationId: `pi-${assistant.entryId}`,
 			userText: prompt,
@@ -572,29 +642,50 @@ export default function honchoMemory(
 		if (!exchange) {
 			if (ctx.hasUI)
 				ctx.ui.notify("Honcho did not sync a private exchange.", "warning");
-			return;
+			return debugLog("honcho:remote", "agent_settled", {
+				queued: false,
+				reason: "private_exchange",
+			});
 		}
-		if (resetBlocked || privacyDisabled) return;
+		if (resetBlocked || privacyDisabled)
+			return debugLog("honcho:remote", "agent_settled", {
+				queued: false,
+				reason: resetBlocked ? "reset_blocked" : "privacy",
+			});
 		pi.appendEntry(DELIVERY_LEDGER_KEY, {
 			kind: "pending",
 			exchange,
 		} satisfies DeliveryLedgerEntry);
 		if (awaitingRemoteRecreation) {
 			awaitingRemoteRecreation = false;
+			debugLog("honcho:remote", "agent_settled", {
+				queued: true,
+				recreation: true,
+			});
 			void initialize(ctx, exchange.operationId);
 			return;
 		}
-		if (deliveryQueue?.enqueue(exchange)) void deliveryQueue.flush();
+		const enqueued = deliveryQueue?.enqueue(exchange) === true;
+		debugLog("honcho:remote", "agent_settled", { queued: enqueued });
+		if (enqueued) void deliveryQueue?.flush();
 	});
 
 	pi.on("context", (event, ctx) => {
-		if (privacyDisabled) return;
+		if (privacyDisabled)
+			return debugLog("honcho:remote", "context", {
+				injected: false,
+				reason: "privacy",
+			});
 		const memory = cachedMemory
 			? formatMemoryContext(
 					cachedMemory,
 					contextBudget(ctx.getContextUsage()?.percent),
 				)
 			: undefined;
+		debugLog("honcho:remote", "context", {
+			cacheHit: Boolean(cachedMemory),
+			injected: Boolean(memory),
+		});
 		if (!memory) return;
 		return {
 			messages: [
@@ -613,7 +704,9 @@ export default function honchoMemory(
 	pi.on("session_before_compact", () => flushDelivery());
 	pi.on("session_before_switch", () => flushDelivery());
 	pi.on("session_before_fork", async (event, ctx) => {
+		const doneFlush = debugTimer("honcho:remote", "session_before_fork.flush");
 		await flushDelivery();
+		doneFlush();
 		const targetEntryId =
 			event.position === "at"
 				? event.entryId
@@ -645,7 +738,9 @@ export default function honchoMemory(
 	});
 
 	pi.on("session_shutdown", async () => {
+		const doneFlush = debugTimer("honcho:remote", "session_shutdown.flush");
 		await flushDelivery();
+		doneFlush();
 		controller?.stop();
 	});
 

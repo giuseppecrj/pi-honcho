@@ -617,8 +617,18 @@ test("session_search reindexes non-empty logical IDs from the prior algorithm", 
 			database.close();
 		}
 
+		// The prior-algorithm database predates this process, so search it from a
+		// freshly registered tool the way an extension restart would.
+		const restarted = new FakePi();
+		localKnowledgeTools(restarted as unknown as ExtensionAPI, {
+			sessionsDir: join(fixture.directory, "sessions"),
+			databasePath: join(fixture.directory, "index.sqlite"),
+		});
+		const restartedTool = restarted.tools.get("session_search");
+		assert.ok(restartedTool);
 		assert.equal(
-			(await fixture.search("search-2", { query: "versioned" })).details.count,
+			(await restartedTool.execute("search-2", { query: "versioned" })).details
+				.count,
 			1,
 		);
 		const upgraded = new DatabaseSync(join(fixture.directory, "index.sqlite"));
@@ -933,6 +943,96 @@ test("session_search reuses an unchanged indexed session without reading it", as
 	}
 });
 
+test("session_search finds sessions created after a prior call on the same tool", async () => {
+	const fixture = await setup();
+	try {
+		await fixture.writeSession(
+			"first.jsonl",
+			session("first", "/work/alpha", [
+				{
+					id: "m1",
+					timestamp: "2026-08-11T00:01:00.000Z",
+					role: "user",
+					content: "first-needle",
+				},
+			]),
+		);
+		assert.match(
+			(await fixture.search("search-1", { query: "first-needle" })).content[0]
+				?.text ?? "",
+			/first-needle/,
+		);
+
+		await fixture.writeSession(
+			"second.jsonl",
+			session("second", "/work/beta", [
+				{
+					id: "m2",
+					timestamp: "2026-08-11T00:02:00.000Z",
+					role: "assistant",
+					content: "second-needle",
+				},
+			]),
+		);
+		assert.match(
+			(await fixture.search("search-2", { query: "second-needle" })).content[0]
+				?.text ?? "",
+			/second-needle/,
+		);
+		assert.match(
+			(await fixture.search("search-3", { query: "first-needle" })).content[0]
+				?.text ?? "",
+			/first-needle/,
+		);
+	} finally {
+		await rm(fixture.directory, { recursive: true, force: true });
+	}
+});
+
+test("session_search recovers with a fresh handle after an external database failure", async () => {
+	const fixture = await setup();
+	try {
+		await fixture.writeSession(
+			"kept.jsonl",
+			session("kept", "/work/alpha", [
+				{
+					id: "m1",
+					timestamp: "2026-08-11T00:01:00.000Z",
+					role: "user",
+					content: "durable-needle",
+				},
+			]),
+		);
+		assert.match(
+			(await fixture.search("search-1", { query: "durable-needle" })).content[0]
+				?.text ?? "",
+			/durable-needle/,
+		);
+
+		const database = new DatabaseSync(join(fixture.directory, "index.sqlite"));
+		try {
+			database.exec(
+				"DROP TABLE message_fts; DROP TABLE messages; DROP TABLE session_files;",
+			);
+		} finally {
+			database.close();
+		}
+
+		assert.match(
+			(await fixture.search("search-2", { query: "durable-needle" })).content[0]
+				?.text ?? "",
+			/Session search unavailable/,
+		);
+		assert.match(
+			(await fixture.search("search-3", { query: "durable-needle" })).content[0]
+				?.text ?? "",
+			/durable-needle/,
+		);
+	} finally {
+		await rm(fixture.directory, { recursive: true, force: true });
+	}
+});
+
 test("session_search skips malformed JSONL and safely falls back from invalid FTS syntax", async () => {
 	const fixture = await setup();
 	try {
@@ -951,6 +1051,90 @@ test("session_search skips malformed JSONL and safely falls back from invalid FT
 
 		const result = await fixture.search("search-1", { query: '"fallback' });
 		assert.match(result.content[0]?.text ?? "", /fallback needle/);
+	} finally {
+		await rm(fixture.directory, { recursive: true, force: true });
+	}
+});
+
+test("session_search stops matching a listed session file that becomes unreadable", async () => {
+	let unreadable = false;
+	const fixture = await setup({
+		readSession: async (path) => {
+			if (unreadable)
+				throw Object.assign(new Error("vanished"), { code: "ENOENT" });
+			return readFile(path, "utf8");
+		},
+	});
+	try {
+		const path = await fixture.writeSession(
+			"vanishing.jsonl",
+			session("vanishing", "/work/alpha", [
+				{
+					id: "message",
+					timestamp: "2026-08-11T00:01:00.000Z",
+					role: "user",
+					content: "vanishing zebra sighting",
+				},
+			]),
+		);
+		assert.match(
+			(await fixture.search("search-1", { query: "zebra" })).content[0]
+				?.text ?? "",
+			/vanishing zebra sighting/,
+		);
+		await writeFile(
+			path,
+			session("vanishing", "/work/alpha", [
+				{
+					id: "message",
+					timestamp: "2026-08-11T00:02:00.000Z",
+					role: "user",
+					content: "replacement heron sighting",
+				},
+			]),
+		);
+		unreadable = true;
+		assert.doesNotMatch(
+			(await fixture.search("search-2", { query: "zebra" })).content[0]
+				?.text ?? "",
+			/vanishing zebra sighting/,
+		);
+		unreadable = false;
+		assert.match(
+			(await fixture.search("search-3", { query: "heron" })).content[0]
+				?.text ?? "",
+			/replacement heron sighting/,
+		);
+	} finally {
+		await rm(fixture.directory, { recursive: true, force: true });
+	}
+});
+
+test("concurrent session_search calls both succeed on the shared handle", async () => {
+	const fixture = await setup({
+		readSession: async (path) => {
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			return readFile(path, "utf8");
+		},
+	});
+	try {
+		await fixture.writeSession(
+			"parallel.jsonl",
+			session("parallel", "/work/alpha", [
+				{
+					id: "message",
+					timestamp: "2026-08-11T00:01:00.000Z",
+					role: "user",
+					content: "parallel walrus query",
+				},
+			]),
+		);
+		const [first, second] = await Promise.all([
+			fixture.search("search-1", { query: "walrus" }),
+			fixture.search("search-2", { query: "walrus" }),
+		]);
+		assert.match(first.content[0]?.text ?? "", /parallel walrus query/);
+		assert.match(second.content[0]?.text ?? "", /parallel walrus query/);
 	} finally {
 		await rm(fixture.directory, { recursive: true, force: true });
 	}

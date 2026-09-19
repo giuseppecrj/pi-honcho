@@ -1,3 +1,4 @@
+import { debugTimer } from "../debug.js";
 import type { HonchoConfiguration } from "./config.js";
 
 export const DEFAULT_RETRY_DELAY_MS = 30_000;
@@ -41,10 +42,13 @@ export class HonchoStatusController {
 	}
 
 	private async probe(): Promise<void> {
+		const done = debugTimer("honcho:remote", "connection.probe");
 		try {
 			await this.createClient().checkConnection();
+			done({ connected: true });
 			this.publish({ kind: "connected" });
 		} catch {
+			done({ connected: false });
 			this.publish({ kind: "retrying", reason: "Unable to reach Honcho" });
 			this.retryTimer = setTimeout(() => this.start(), this.retryDelayMs);
 			this.retryTimer.unref?.();

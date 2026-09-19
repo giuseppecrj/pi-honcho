@@ -20,9 +20,12 @@ import {
 	resolve,
 } from "node:path";
 
+import { debugTimer } from "../debug.js";
 import { scanContent } from "./content-scanner.js";
 
 const SLUG = /^[a-z0-9](?:[a-z0-9]|-(?!-))*[a-z0-9]?$/;
+const SECTION_HEADER = /^##\s+(.+?)\s*$/;
+const SECTION_HEADER_PREFIX = /^##\s+/;
 const SECTIONS = new Set([
 	"when to use",
 	"procedure",
@@ -456,6 +459,13 @@ export class SkillStore {
 			);
 		return result;
 	}
+	/**
+	 * Resolve a valid slug straight to `<root>/<slug>/SKILL.md` and validate
+	 * that path instead of scanning the whole tree. Symlinked skill directories
+	 * stay invisible, matching the tree scan used for listings. Skills nested
+	 * deeper than the root (still discovered by the tree scan) fall back to the
+	 * recursive scan when the direct path misses.
+	 */
 	private async location(id: string): Promise<Location | undefined> {
 		const parsed = parseId(id);
 		if (
@@ -463,6 +473,24 @@ export class SkillStore {
 			(parsed.scope === "project" && parsed.project !== this.projectName)
 		)
 			return undefined;
+		const root = this.root(parsed.scope);
+		if (!root) return undefined;
+		const directory = join(root, parsed.slug);
+		const file = join(directory, "SKILL.md");
+		try {
+			const directoryStat = await lstat(directory);
+			const fileStat = await lstat(file);
+			if (directoryStat.isDirectory() && fileStat.isFile())
+				return {
+					skillId: id,
+					scope: parsed.scope,
+					slug: parsed.slug,
+					path: file,
+					projectName: parsed.scope === "project" ? parsed.project : undefined,
+				};
+		} catch {
+			/* Direct path missed; fall back to the recursive scan below. */
+		}
 		return (await this.locations(parsed.scope)).find(
 			(item) => item.skillId === id,
 		);
@@ -487,17 +515,23 @@ export class SkillStore {
 		}
 	}
 	async loadIndex(scope?: SkillScope): Promise<SkillIndex[]> {
+		const done = debugTimer("honcho:local", "skills.load_index");
 		const docs = await Promise.all(
 			(await this.locations(scope)).map((x) => this.read(x)),
 		);
-		return docs
+		const index = docs
 			.filter((x): x is SkillDocument => Boolean(x))
 			.map(({ body: _body, version: _version, ...index }) => index)
 			.slice(0, 500);
+		done({ count: index.length });
+		return index;
 	}
 	async loadSkill(id: string): Promise<SkillDocument | null> {
+		const done = debugTimer("honcho:local", "skills.load_skill");
 		const location = await this.location(id);
-		return location ? this.read(location) : null;
+		const doc = location ? await this.read(location) : null;
+		done({ found: Boolean(doc) });
+		return doc;
 	}
 
 	private async piSkillPaths(cwd?: string): Promise<string[]> {
@@ -560,12 +594,18 @@ export class SkillStore {
 		}
 		return undefined;
 	}
+	/**
+	 * One tree snapshot per create feeds the duplicate, Pi-collision, and
+	 * similarity checks. The snapshot is scoped to this call only, so skills
+	 * added or removed externally are still seen by the next operation.
+	 */
 	private async conflict(
 		slug: string,
 		description: string,
 		scope: SkillScope,
 	): Promise<SkillResult | undefined> {
-		const existing = (await this.locations(scope)).find((x) => x.slug === slug);
+		const snapshot = await this.locations(scope);
+		const existing = snapshot.find((x) => x.slug === slug);
 		if (existing)
 			return {
 				success: false,
@@ -574,49 +614,21 @@ export class SkillStore {
 				similarSkillIds: [existing.skillId],
 				suggestedAction: "patch",
 			};
-		if (scope === "global") {
-			const claimed = await this.piClaims(slug, this.cwd);
-			if (claimed)
-				return {
-					success: false,
-					error: `Pi already loads a skill named '${slug}' from ${claimed}; choose another name.`,
-					conflictType: "name-collision",
-					suggestedAction: "rename",
-				};
-			const globals = (await this.loadIndex("global")).filter(
-				(x) =>
-					similarity(slug.replaceAll("-", " "), x.name.replaceAll("-", " ")) >=
-					0.7,
-			);
-			for (const item of globals) {
-				const descriptionSimilarity = similarity(description, item.description);
-				if (descriptionSimilarity >= 0.75)
-					return {
-						success: false,
-						error: `A similar global skill already exists (${item.skillId}); patch or update it.`,
-						conflictType: "similar",
-						similarSkillIds: [item.skillId],
-						suggestedAction: "patch",
-					};
-				return {
-					success: false,
-					error: `A near-name global skill already exists (${item.skillId}); choose a clearer name.`,
-					conflictType: "name-collision",
-					similarSkillIds: [item.skillId],
-					suggestedAction: "rename",
-				};
-			}
-		} else {
-			const claimed = await this.piClaims(slug, this.cwd);
-			if (claimed)
-				return {
-					success: false,
-					error: `Pi already loads a project skill named '${slug}' from ${claimed}; choose another name.`,
-					conflictType: "name-collision",
-					suggestedAction: "rename",
-				};
-		}
-		const candidates = (await this.loadIndex(scope)).filter(
+		const claimed = await this.piClaims(slug, this.cwd);
+		if (claimed)
+			return {
+				success: false,
+				error:
+					scope === "global"
+						? `Pi already loads a skill named '${slug}' from ${claimed}; choose another name.`
+						: `Pi already loads a project skill named '${slug}' from ${claimed}; choose another name.`,
+				conflictType: "name-collision",
+				suggestedAction: "rename",
+			};
+		const index = (await Promise.all(snapshot.map((x) => this.read(x)))).filter(
+			(x): x is SkillDocument => Boolean(x),
+		);
+		const candidates = index.filter(
 			(x) =>
 				similarity(slug.replaceAll("-", " "), x.name.replaceAll("-", " ")) >=
 				0.7,
@@ -747,12 +759,12 @@ export class SkillStore {
 		const output: string[] = [];
 		let found = false;
 		for (let i = 0; i < lines.length; i++) {
-			const header = lines[i].match(/^##\s+(.+?)\s*$/);
+			const header = lines[i].match(SECTION_HEADER);
 			if (header?.[1].toLowerCase() === name.toLowerCase()) {
 				found = true;
 				output.push(`## ${name}`, normalized.content);
 				i++;
-				while (i < lines.length && !/^##\s+/.test(lines[i])) i++;
+				while (i < lines.length && !SECTION_HEADER_PREFIX.test(lines[i])) i++;
 				if (i < lines.length) {
 					if (output.at(-1) !== "") output.push("");
 					output.push(lines[i]);
@@ -780,6 +792,14 @@ export class SkillStore {
 		if (scanner) return { success: false, error: scanner };
 		return this.writeUpdated(doc, nextBody, nextDescription);
 	}
+	// Nested skills live below the canonical `<root>/<slug>` layout;
+	// accept their discovered path only when it stays inside the root.
+	private async nestedInsideRoot(root: string, path: string): Promise<boolean> {
+		if (basename(path) !== "SKILL.md") return false;
+		const rootReal = await realpath(root).catch(() => resolve(root));
+		const parentReal = await realpath(dirname(path)).catch(() => null);
+		return parentReal !== null && inside(rootReal, parentReal);
+	}
 	private async writeUpdated(
 		doc: SkillDocument,
 		body: string,
@@ -792,16 +812,19 @@ export class SkillStore {
 				error: "Project skills require an active project.",
 			};
 		try {
-			const target = await this.safePath(
+			let target = await this.safePath(
 				root,
 				parseId(doc.skillId)?.slug ?? "",
 				true,
 			);
-			if (resolve(target) !== resolve(doc.path))
-				return {
-					success: false,
-					error: "Skill path does not match its configured root.",
-				};
+			if (resolve(target) !== resolve(doc.path)) {
+				if (!(await this.nestedInsideRoot(root, doc.path)))
+					return {
+						success: false,
+						error: "Skill path does not match its configured root.",
+					};
+				target = doc.path;
+			}
 			const updated = {
 				...doc,
 				description,
@@ -832,12 +855,15 @@ export class SkillStore {
 				error: "Project skills require an active project.",
 			};
 		try {
-			const target = await this.safePath(root, parsed?.slug ?? "");
-			if (resolve(target) !== resolve(doc.path))
-				return {
-					success: false,
-					error: "Skill path does not match its configured root.",
-				};
+			let target = await this.safePath(root, parsed?.slug ?? "");
+			if (resolve(target) !== resolve(doc.path)) {
+				if (!(await this.nestedInsideRoot(root, doc.path)))
+					return {
+						success: false,
+						error: "Skill path does not match its configured root.",
+					};
+				target = doc.path;
+			}
 			await rm(target);
 			await rmdir(dirname(target)).catch(() => {});
 			return this.result(doc, `Skill '${doc.name}' deleted.`);

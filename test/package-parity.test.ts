@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -22,6 +22,23 @@ import {
 	initialRegistry,
 	updateRepositoryEntry,
 } from "../src/remote/registry.js";
+
+// Pin every user-scoped path before any test runs. Extension startup does
+// fire-and-forget async work that can write the registry/config after a
+// fixture restores env vars, so restores must land on these temp values,
+// never on the real ~/.pi/agent or ~/.honcho paths. tsx --test runs each
+// file in its own process, so process-wide pinning here is safe.
+const hermeticHome = await mkdtemp(
+	join(tmpdir(), "pi-honcho-package-parity-home-"),
+);
+process.env.HOME = hermeticHome;
+process.env.USERPROFILE = hermeticHome;
+const hermeticAgentDir = join(hermeticHome, "agent");
+const hermeticSessionsDir = join(hermeticHome, "sessions");
+await mkdir(hermeticAgentDir, { recursive: true });
+await mkdir(hermeticSessionsDir, { recursive: true });
+process.env.PI_CODING_AGENT_DIR = hermeticAgentDir;
+process.env.PI_CODING_AGENT_SESSION_DIR = hermeticSessionsDir;
 
 type ToolResult = {
 	content: Array<{ type?: string; text: string }>;
@@ -132,7 +149,7 @@ function connectedClient() {
 		checkConnection: async () => undefined,
 		fetchCachedMemory: async () => ({}),
 		deliverExchange: async () => ["remote-1"],
-		reconcileOperationId: async () => [],
+		reconcileOperationIds: async () => new Map<string, string[]>(),
 		cloneSession: async () => "cloned-session",
 		search: async () => [],
 		chat: async () => undefined,
@@ -563,4 +580,17 @@ test("package manifest lists only the composition root", async () => {
 	const pi = (manifest as { pi?: { extensions?: unknown } }).pi;
 	assert.ok(pi && typeof pi === "object");
 	assert.deepEqual(pi.extensions, ["./src/index.ts"]);
+});
+
+// Declared last: node:test runs tests in declaration order, so this catches
+// any earlier fixture that restored the pinned env vars to the real values.
+test("fixtures never unpin agent dirs to the real user fallback paths", async () => {
+	assert.equal(process.env.HOME, hermeticHome);
+	assert.equal(process.env.PI_CODING_AGENT_DIR, hermeticAgentDir);
+	assert.equal(process.env.PI_CODING_AGENT_SESSION_DIR, hermeticSessionsDir);
+	// A write through the homedir() fallback would land here; it must not exist.
+	await assert.rejects(
+		stat(join(hermeticHome, ".pi", "agent", "honcho-memory.json")),
+		{ code: "ENOENT" },
+	);
 });

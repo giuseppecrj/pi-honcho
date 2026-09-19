@@ -1,3 +1,4 @@
+import { debugTimer } from "../debug.js";
 import { type FinalizedExchange, safeExchange } from "./exchange.js";
 
 export interface HonchoExchangeClient {
@@ -8,10 +9,10 @@ export interface HonchoExchangeClient {
 }
 
 export interface HonchoRecoveryClient {
-	reconcileOperationId(
+	reconcileOperationIds(
 		sessionId: string,
-		operationId: string,
-	): Promise<string[]>;
+		operationIds: readonly string[],
+	): Promise<ReadonlyMap<string, string[]>>;
 }
 
 export interface RemoteAcknowledgement {
@@ -93,6 +94,18 @@ export class ExchangeDeliveryQueue {
 	}
 
 	private async deliverPending(): Promise<void> {
+		const done = debugTimer("honcho:remote", "delivery.flush", {
+			pending: this.pending.length,
+		});
+		let delivered = 0;
+		let reconcileFetches = 0;
+		// One remote history fetch per flush resolves every attempted exchange.
+		let reconciled:
+			| {
+					requested: ReadonlySet<string>;
+					messageIds: ReadonlyMap<string, string[]>;
+			  }
+			| undefined;
 		while (this.pending.length > 0) {
 			const pending = this.pending[0];
 			try {
@@ -100,10 +113,21 @@ export class ExchangeDeliveryQueue {
 				if (pending.attempted) {
 					const recoveryClient = this.recoveryClient;
 					if (!recoveryClient) return;
-					messageIds = await recoveryClient.reconcileOperationId(
-						this.sessionId,
-						pending.exchange.operationId,
-					);
+					const operationId = pending.exchange.operationId;
+					if (!reconciled?.requested.has(operationId)) {
+						const operationIds = this.pending
+							.filter((item) => item.attempted)
+							.map((item) => item.exchange.operationId);
+						reconcileFetches += 1;
+						reconciled = {
+							requested: new Set(operationIds),
+							messageIds: await recoveryClient.reconcileOperationIds(
+								this.sessionId,
+								operationIds,
+							),
+						};
+					}
+					messageIds = reconciled.messageIds.get(operationId);
 				}
 				if (!messageIds?.length) {
 					pending.attempted = true;
@@ -118,9 +142,12 @@ export class ExchangeDeliveryQueue {
 					messageIds: acknowledged,
 				});
 				this.pending.shift();
+				delivered += 1;
 			} catch {
+				done({ delivered, failed: this.pending.length, reconcileFetches });
 				return;
 			}
 		}
+		done({ delivered, failed: 0, reconcileFetches });
 	}
 }
