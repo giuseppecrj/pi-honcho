@@ -792,6 +792,14 @@ export class SkillStore {
 		if (scanner) return { success: false, error: scanner };
 		return this.writeUpdated(doc, nextBody, nextDescription);
 	}
+	// Nested skills live below the canonical `<root>/<slug>` layout;
+	// accept their discovered path only when it stays inside the root.
+	private async nestedInsideRoot(root: string, path: string): Promise<boolean> {
+		if (basename(path) !== "SKILL.md") return false;
+		const rootReal = await realpath(root).catch(() => resolve(root));
+		const parentReal = await realpath(dirname(path)).catch(() => null);
+		return parentReal !== null && inside(rootReal, parentReal);
+	}
 	private async writeUpdated(
 		doc: SkillDocument,
 		body: string,
@@ -810,15 +818,7 @@ export class SkillStore {
 				true,
 			);
 			if (resolve(target) !== resolve(doc.path)) {
-				// Nested skills live below the canonical `<root>/<slug>` layout;
-				// accept their discovered path only when it stays inside the root.
-				const rootReal = await realpath(root).catch(() => resolve(root));
-				const parentReal = await realpath(dirname(doc.path)).catch(() => null);
-				if (
-					basename(doc.path) !== "SKILL.md" ||
-					!parentReal ||
-					!inside(rootReal, parentReal)
-				)
+				if (!(await this.nestedInsideRoot(root, doc.path)))
 					return {
 						success: false,
 						error: "Skill path does not match its configured root.",
@@ -855,12 +855,15 @@ export class SkillStore {
 				error: "Project skills require an active project.",
 			};
 		try {
-			const target = await this.safePath(root, parsed?.slug ?? "");
-			if (resolve(target) !== resolve(doc.path))
-				return {
-					success: false,
-					error: "Skill path does not match its configured root.",
-				};
+			let target = await this.safePath(root, parsed?.slug ?? "");
+			if (resolve(target) !== resolve(doc.path)) {
+				if (!(await this.nestedInsideRoot(root, doc.path)))
+					return {
+						success: false,
+						error: "Skill path does not match its configured root.",
+					};
+				target = doc.path;
+			}
 			await rm(target);
 			await rmdir(dirname(target)).catch(() => {});
 			return this.result(doc, `Skill '${doc.name}' deleted.`);
