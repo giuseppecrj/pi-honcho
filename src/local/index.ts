@@ -69,10 +69,12 @@ type SearchRow = {
 	entry_id: string;
 };
 
+type SqliteRow = Record<string, unknown>;
+
 type Statement = {
-	all(...params: unknown[]): unknown[];
-	get(...params: unknown[]): unknown;
-	run(...params: unknown[]): unknown;
+	all(...params: unknown[]): SqliteRow[];
+	get(...params: unknown[]): SqliteRow | undefined;
+	run(...params: unknown[]): void;
 };
 
 type Database = {
@@ -381,6 +383,7 @@ async function indexSessions(
 	db: Database,
 	sessionsDir: string,
 	readSession: (path: string) => Promise<string>,
+	cleanFiles: Map<string, string>,
 ): Promise<void> {
 	const files = await sessionFiles(sessionsDir);
 	const seen = new Set(files);
@@ -392,7 +395,12 @@ async function indexSessions(
 				mtimeNs: stats.mtimeNs.toString(),
 				ctimeNs: stats.ctimeNs.toString(),
 			};
-			if (unchanged(db, path, metadata)) continue;
+			const statKey = `${metadata.size}:${metadata.mtimeNs}:${metadata.ctimeNs}`;
+			if (cleanFiles.get(path) === statKey) continue;
+			if (unchanged(db, path, metadata)) {
+				cleanFiles.set(path, statKey);
+				continue;
+			}
 			const content = await readSession(path);
 			const fingerprint = createHash("sha256").update(content).digest("hex");
 			if (contentChanged(db, path, fingerprint)) {
@@ -409,10 +417,14 @@ async function indexSessions(
 					metadata.ctimeNs,
 					path,
 				);
+			cleanFiles.set(path, statKey);
 		} catch {
+			cleanFiles.delete(path);
 			// Unreadable or disappearing files are skipped; the next search can retry.
 		}
 	}
+	for (const path of cleanFiles.keys())
+		if (!seen.has(path)) cleanFiles.delete(path);
 	const indexed = db.prepare("SELECT path FROM session_files").all() as Array<{
 		path: string;
 	}>;
@@ -475,18 +487,17 @@ function rowsFor(
 		values.push(input.role);
 	}
 	values.push(limit);
-	return db
-		.prepare(
-			`WITH matching AS (
-				SELECT m.project, m.role, m.content, m.timestamp, m.source_path, m.entry_id,
-					ROW_NUMBER() OVER (PARTITION BY m.logical_id ORDER BY m.timestamp DESC, m.source_path ASC) AS result_rank
-				FROM messages m WHERE ${conditions.join(" AND ")}
-			)
-			SELECT project, role, content, timestamp, source_path, entry_id FROM matching
-			WHERE result_rank = 1
-			ORDER BY timestamp DESC, source_path ASC, entry_id ASC LIMIT ?`,
+	// conditions holds only fixed SQL fragments; every user-supplied value is
+	// bound through a ? placeholder in values.
+	const sql = `WITH matching AS (
+			SELECT m.project, m.role, m.content, m.timestamp, m.source_path, m.entry_id,
+				ROW_NUMBER() OVER (PARTITION BY m.logical_id ORDER BY m.timestamp DESC, m.source_path ASC) AS result_rank
+			FROM messages m WHERE ${conditions.join(" AND ")}
 		)
-		.all(...values) as SearchRow[];
+		SELECT project, role, content, timestamp, source_path, entry_id FROM matching
+		WHERE result_rank = 1
+		ORDER BY timestamp DESC, source_path ASC, entry_id ASC LIMIT ?`;
+	return db.prepare(sql).all(...values) as SearchRow[];
 }
 
 function search(db: Database, input: SearchInput, limit: number): SearchRow[] {
@@ -587,6 +598,30 @@ export default function localKnowledgeTools(
 
 	const readSession =
 		options.readSession ?? ((path: string) => readFile(path, "utf8"));
+	// The handle and per-file stat cache live for the extension's lifetime so a
+	// search does not reopen SQLite, rerun schema init, or recheck unchanged
+	// session files on every call. External session writes change file stats and
+	// are picked up; any failure resets both so the next call starts clean.
+	let db: Database | undefined;
+	const cleanFiles = new Map<string, string>();
+	async function getDatabase(): Promise<Database> {
+		if (db) return db;
+		await mkdir(dirname(paths.databasePath), { recursive: true });
+		const opened = await openDatabase(paths.databasePath);
+		opened.exec("PRAGMA busy_timeout = 5000");
+		initialize(opened);
+		db = opened;
+		return opened;
+	}
+	function resetDatabase(): void {
+		try {
+			db?.close();
+		} catch {
+			// The handle may already be unusable; dropping it is enough.
+		}
+		db = undefined;
+		cleanFiles.clear();
+	}
 	pi.registerTool({
 		name: "session_search",
 		label: "Session Search",
@@ -638,15 +673,16 @@ Returns bounded conversation snippets with session dates and project context. La
 					success: false,
 					message: "query is required",
 				});
-			let db: Database | undefined;
 			try {
-				await mkdir(dirname(paths.databasePath), { recursive: true });
-				db = await openDatabase(paths.databasePath);
-				db.exec("PRAGMA busy_timeout = 5000");
-				initialize(db);
-				await indexSessions(db, paths.sessionsDir, readSession);
+				const database = await getDatabase();
+				await indexSessions(
+					database,
+					paths.sessionsDir,
+					readSession,
+					cleanFiles,
+				);
 				const total = (
-					db.prepare("SELECT COUNT(*) AS count FROM messages").get() as {
+					database.prepare("SELECT COUNT(*) AS count FROM messages").get() as {
 						count: number;
 					}
 				).count;
@@ -666,7 +702,7 @@ Returns bounded conversation snippets with session dates and project context. La
 					100,
 					MAX_SNIPPET_CHARS,
 				);
-				const results = search(db, input, limit);
+				const results = search(database, input, limit);
 				if (!results.length)
 					return toolResult(
 						"No results found. Try a different search term or broader query.",
@@ -707,12 +743,11 @@ Returns bounded conversation snippets with session dates and project context. La
 					outputTruncated: output.truncated,
 				});
 			} catch (error) {
+				resetDatabase();
 				return toolResult(
 					`Session search unavailable: ${error instanceof Error ? error.message : "unknown error"}`,
 					{ success: false, message: "Session search unavailable" },
 				);
-			} finally {
-				db?.close();
 			}
 		},
 	});
