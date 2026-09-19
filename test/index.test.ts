@@ -23,8 +23,17 @@ import {
 	updateRepositoryEntry,
 } from "../src/remote/registry.js";
 
+// Pin every user-scoped path before any test runs and never restore them:
+// extension startup does fire-and-forget async work (registry writes, oauth
+// refresh persisting ~/.honcho/config.json) that must never reach real paths.
+const hermeticHome = await mkdtemp(join(tmpdir(), "pi-honcho-agent-home-"));
+process.env.HOME = hermeticHome;
+process.env.USERPROFILE = hermeticHome;
 process.env.PI_CODING_AGENT_DIR = await mkdtemp(
 	join(tmpdir(), "pi-honcho-agent-"),
+);
+process.env.PI_CODING_AGENT_SESSION_DIR = await mkdtemp(
+	join(tmpdir(), "pi-honcho-agent-sessions-"),
 );
 const testRepositoryKey = canonicalRepositoryKey(
 	process.cwd(),

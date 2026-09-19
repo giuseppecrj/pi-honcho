@@ -16,6 +16,12 @@ import {
 	updateRepositoryEntry,
 } from "../src/remote/registry.js";
 
+// Pin the agent dir before any test runs so a fixture restoring to the
+// pre-test value can never point registry writes at the real ~/.pi/agent.
+process.env.PI_CODING_AGENT_DIR = await mkdtemp(
+	join(tmpdir(), "pi-honcho-registry-agent-"),
+);
+
 test("uses a canonical origin when Git provides one", () => {
 	assert.equal(
 		canonicalRepositoryKey("/work/app", "git@github.com:Org/App.git"),
