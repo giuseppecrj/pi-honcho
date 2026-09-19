@@ -13,6 +13,7 @@ import { join } from "node:path";
 import test from "node:test";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import localKnowledgeTools from "../src/local/index.js";
+import { SkillStore } from "../src/local/skill-store.js";
 
 type RegisteredTool = {
 	name: string;
@@ -682,6 +683,74 @@ test("nested skills are listed, viewable, and patchable", async () => {
 		);
 	} finally {
 		await cleanup(fixture.root);
+	}
+});
+
+test("nested skills can be deleted", async () => {
+	const fixture = await setup({ project: false });
+	try {
+		const nested = join(fixture.global, "nested", "deep-skill");
+		await mkdir(nested, { recursive: true });
+		await writeFile(
+			join(nested, "SKILL.md"),
+			`---\nname: deep-skill\ndescription: Nested skill\n---\n## Procedure\n1. old\n`,
+		);
+		const deleted = await output(fixture.tool, {
+			action: "delete",
+			skill_id: "global:deep-skill",
+		});
+		assert.equal(deleted.success, true);
+		await assert.rejects(access(join(nested, "SKILL.md")));
+		const list = await output(fixture.tool, { action: "view" });
+		assert.ok(
+			!(list.skills as Array<{ skillId: string }>).some(
+				(item) => item.skillId === "global:deep-skill",
+			),
+		);
+	} finally {
+		await cleanup(fixture.root);
+	}
+});
+
+test("delete rejects a skill path that escapes its root via symlink", async () => {
+	const root = await mkdtemp(join(tmpdir(), "pi-honcho-skills-"));
+	try {
+		const global = join(root, "global");
+		const outside = join(root, "outside", "evil-skill");
+		await mkdir(global, { recursive: true });
+		await mkdir(outside, { recursive: true });
+		const file = join(outside, "SKILL.md");
+		await writeFile(
+			file,
+			`---\nname: evil-skill\ndescription: Escaping skill\n---\n## Procedure\n1. bad\n`,
+		);
+		await symlink(join(root, "outside"), join(global, "nested"));
+		const store = new SkillStore({ globalSkillsDir: global });
+		// The tree scan skips symlinked directories, so force discovery of the
+		// escaping path to exercise delete's containment check directly.
+		const escaped = join(global, "nested", "evil-skill", "SKILL.md");
+		(store as unknown as { loadSkill(id: string): unknown }).loadSkill =
+			async () => ({
+				skillId: "global:evil-skill",
+				scope: "global",
+				fileName: "SKILL.md",
+				path: escaped,
+				name: "evil-skill",
+				description: "Escaping skill",
+				created: "2026-01-01",
+				updated: "2026-01-01",
+				body: "## Procedure\n1. bad",
+				version: 1,
+			});
+		const result = await store.delete("global:evil-skill");
+		assert.equal(result.success, false);
+		assert.equal(
+			result.error,
+			"Skill path does not match its configured root.",
+		);
+		await access(file);
+	} finally {
+		await cleanup(root);
 	}
 });
 
