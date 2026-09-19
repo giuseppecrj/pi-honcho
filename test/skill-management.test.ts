@@ -646,6 +646,62 @@ test("linked worktrees share the main repository project skill root", async () =
 	}
 });
 
+test("view resolves a skill id directly and sees external edits immediately", async () => {
+	const fixture = await setup();
+	try {
+		await output(fixture.tool, {
+			action: "create",
+			name: "fresh-skill",
+			description: "A fresh skill",
+			scope: "global",
+			content: "## Procedure\n1. original",
+		});
+		await writeFile(
+			join(fixture.global, "fresh-skill", "SKILL.md"),
+			`---\nname: fresh-skill\ndescription: Edited outside\n---\nExternal body\n`,
+		);
+		const viewed = await output(fixture.tool, {
+			action: "view",
+			skill_id: "global:fresh-skill",
+		});
+		assert.equal(viewed.success, true);
+		assert.equal(viewed.description, "Edited outside");
+		assert.equal(viewed.body, "External body");
+	} finally {
+		await cleanup(fixture.root);
+	}
+});
+
+test("create detects a duplicate skill added externally after earlier operations", async () => {
+	const fixture = await setup();
+	try {
+		await output(fixture.tool, {
+			action: "create",
+			name: "unrelated-workflow",
+			description: "An unrelated workflow",
+			scope: "global",
+			content: "safe",
+		});
+		await mkdir(join(fixture.global, "late-addition"), { recursive: true });
+		await writeFile(
+			join(fixture.global, "late-addition", "SKILL.md"),
+			`---\nname: late-addition\ndescription: Added externally\n---\nbody`,
+		);
+		const result = await output(fixture.tool, {
+			action: "create",
+			name: "late-addition",
+			description: "x",
+			scope: "global",
+			content: "safe",
+		});
+		assert.equal(result.success, false);
+		assert.equal(result.conflictType, "duplicate");
+		assert.match(String(result.error), /already exists/);
+	} finally {
+		await cleanup(fixture.root);
+	}
+});
+
 test("Pi project discovery does not inspect a parent outside the repository", async () => {
 	const fixture = await setup();
 	try {

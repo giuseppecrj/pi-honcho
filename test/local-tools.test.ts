@@ -617,8 +617,18 @@ test("session_search reindexes non-empty logical IDs from the prior algorithm", 
 			database.close();
 		}
 
+		// The prior-algorithm database predates this process, so search it from a
+		// freshly registered tool the way an extension restart would.
+		const restarted = new FakePi();
+		localKnowledgeTools(restarted as unknown as ExtensionAPI, {
+			sessionsDir: join(fixture.directory, "sessions"),
+			databasePath: join(fixture.directory, "index.sqlite"),
+		});
+		const restartedTool = restarted.tools.get("session_search");
+		assert.ok(restartedTool);
 		assert.equal(
-			(await fixture.search("search-2", { query: "versioned" })).details.count,
+			(await restartedTool.execute("search-2", { query: "versioned" })).details
+				.count,
 			1,
 		);
 		const upgraded = new DatabaseSync(join(fixture.directory, "index.sqlite"));
@@ -928,6 +938,96 @@ test("session_search reuses an unchanged indexed session without reading it", as
 			/cached needle/,
 		);
 		assert.equal(reads, 1);
+	} finally {
+		await rm(fixture.directory, { recursive: true, force: true });
+	}
+});
+
+test("session_search finds sessions created after a prior call on the same tool", async () => {
+	const fixture = await setup();
+	try {
+		await fixture.writeSession(
+			"first.jsonl",
+			session("first", "/work/alpha", [
+				{
+					id: "m1",
+					timestamp: "2026-08-11T00:01:00.000Z",
+					role: "user",
+					content: "first-needle",
+				},
+			]),
+		);
+		assert.match(
+			(await fixture.search("search-1", { query: "first-needle" })).content[0]
+				?.text ?? "",
+			/first-needle/,
+		);
+
+		await fixture.writeSession(
+			"second.jsonl",
+			session("second", "/work/beta", [
+				{
+					id: "m2",
+					timestamp: "2026-08-11T00:02:00.000Z",
+					role: "assistant",
+					content: "second-needle",
+				},
+			]),
+		);
+		assert.match(
+			(await fixture.search("search-2", { query: "second-needle" })).content[0]
+				?.text ?? "",
+			/second-needle/,
+		);
+		assert.match(
+			(await fixture.search("search-3", { query: "first-needle" })).content[0]
+				?.text ?? "",
+			/first-needle/,
+		);
+	} finally {
+		await rm(fixture.directory, { recursive: true, force: true });
+	}
+});
+
+test("session_search recovers with a fresh handle after an external database failure", async () => {
+	const fixture = await setup();
+	try {
+		await fixture.writeSession(
+			"kept.jsonl",
+			session("kept", "/work/alpha", [
+				{
+					id: "m1",
+					timestamp: "2026-08-11T00:01:00.000Z",
+					role: "user",
+					content: "durable-needle",
+				},
+			]),
+		);
+		assert.match(
+			(await fixture.search("search-1", { query: "durable-needle" })).content[0]
+				?.text ?? "",
+			/durable-needle/,
+		);
+
+		const database = new DatabaseSync(join(fixture.directory, "index.sqlite"));
+		try {
+			database.exec(
+				"DROP TABLE message_fts; DROP TABLE messages; DROP TABLE session_files;",
+			);
+		} finally {
+			database.close();
+		}
+
+		assert.match(
+			(await fixture.search("search-2", { query: "durable-needle" })).content[0]
+				?.text ?? "",
+			/Session search unavailable/,
+		);
+		assert.match(
+			(await fixture.search("search-3", { query: "durable-needle" })).content[0]
+				?.text ?? "",
+			/durable-needle/,
+		);
 	} finally {
 		await rm(fixture.directory, { recursive: true, force: true });
 	}
