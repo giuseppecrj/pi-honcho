@@ -408,7 +408,16 @@ export default function honchoMemory(
 	createLifecycleClient: StartupClientFactory = (configuration) =>
 		new SdkHonchoMemoryClient(configuration),
 ): void {
-	if (process.env.PI_SUBAGENT_ID?.trim()) return;
+	// A subagent must not be written to memory: the process hosting child sessions
+	// shares the parent's peer and session, so delegated task text would land as
+	// memory exchanges.
+	//
+	// `PI_SUBAGENT_CHILD=1` is what pi-subagents publishes on that process
+	// (src/runs/shared/child-runtime-config.ts exports SUBAGENT_CHILD_ENV), and
+	// pi-subagents itself tests it with a strict `=== "1"` -- match that contract
+	// exactly, so a present-but-not-"1" value can never disable memory for a root
+	// session. `PI_SUBAGENT_ID` is what other hosts (Herdr) set, so it is kept.
+	if (process.env.PI_SUBAGENT_ID?.trim() || process.env.PI_SUBAGENT_CHILD === "1") return;
 
 	let controller: HonchoStatusController | undefined;
 	let cachedMemory: CachedMemory | undefined;

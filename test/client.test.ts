@@ -442,7 +442,10 @@ test("maps cached recall, delivery, reconciliation, and tool operations", async 
 	assert.deepEqual(session.contextCalls, [
 		{
 			summary: true,
-			tokens: 800,
+			// Must stay above the workspace-wide representation size, otherwise
+			// Honcho returns an empty summary and only the workspace-global
+			// representation is injected (see the comment in fetchCachedMemory).
+			tokens: 8000,
 			peerPerspective: pi,
 			peerTarget: fake.peersById.get("user"),
 			limitToSession: false,

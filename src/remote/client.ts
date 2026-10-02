@@ -171,7 +171,15 @@ export class SdkHonchoMemoryClient
 		const { user, pi, session } = await this.openSession(sessionId);
 		const context: unknown = await session.context({
 			summary: true,
-			tokens: 800,
+			// Must exceed the workspace-wide peer representation or Honcho drops the
+			// session summary entirely and returns only that (workspace-global)
+			// representation — which then reads as "unrelated to this task" in every
+			// repo. Measured on core_engineering: the representation is ~13k chars,
+			// and the summary comes back empty at tokens <= 6000 but is included at
+			// 7000+. The injected block stays small because contextBudget() still
+			// caps it, and formatMemoryContext lists the summary first, so the
+			// repo-relevant summary wins the truncation.
+			tokens: 8000,
 			peerPerspective: pi,
 			peerTarget: user,
 			limitToSession: false,
