@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/)
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [v0.3.1](https://github.com/giuseppecrj/pi-honcho/compare/v0.3.0...v0.3.1)
+
+### Fixed
+
+- Discover reset-recovery session files directly instead of calling `SessionManager.listAll()`, which parses every conversation to build unused summaries. Recovery remains awaited and still searches all project session directories, including symlinked directories, before enabling memory delivery and tools.
+- Preserve reset recovery for legacy sessions with ignored JSON lines before the header. Resolve conflicting reset entries at the same timestamp conservatively: unfinished or uncertain deletion blocks memory; a completed deletion still requires recreation. The result no longer depends on directory order.
+- Add real-file startup regression coverage for completed, unfinished, and uncertain resets across repositories, missing directories, marker-free and invalid files, symlinked directories, and conflicting timestamp ties.
+- Correct the scope of the v0.3.0 performance claim below: its raw-byte pre-filter still ran after the expensive full-history discovery. This release removes that discovery overhead; it does not eliminate the remaining marker scan.
+
 ## [v0.3.0](https://github.com/giuseppecrj/pi-honcho/compare/v0.2.1...v0.3.0)
 
 Performance release. Session startup and `/reload` no longer parse the entire session history for reset recovery (raw-byte marker pre-filter; measured 1,155 files scanned with only 2 parsed, ~12ms instead of multi-second CPU). Per-turn hooks now use incremental entry tracking, a stat-gated standing-instructions cache, and a cached, budget-correct memory context. `session_search` keeps its SQLite handle and clean-file index across calls. New `HONCHO_DEBUG=1` (plus optional `HONCHO_DEBUG_FILE`) writes provenance logs with timings and counters for startup, delivery, and cache behavior. Nested skills are now fully manageable (view, patch, delete) within their root, and the test suite is hermetic — `npm test` can no longer write to the real `~/.pi/agent/honcho-memory.json` or `~/.honcho/config.json` (users bitten by the previous behavior should run `/honcho init` once to re-link).

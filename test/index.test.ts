@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -114,6 +114,111 @@ async function waitFor(check: () => boolean): Promise<void> {
 	throw new Error("Timed out waiting for lifecycle work");
 }
 
+/** Startup must enumerate session paths, never parse every history. */
+function forbidListAll(): () => void {
+	const sessionManager = SessionManager as unknown as {
+		listAll: () => Promise<Array<{ path: string }>>;
+	};
+	const listAll = sessionManager.listAll;
+	sessionManager.listAll = async () => {
+		throw new Error("SessionManager.listAll must not run at startup");
+	};
+	return () => {
+		sessionManager.listAll = listAll;
+	};
+}
+
+/** Pi's global sessions root inside this file's hermetic agent directory. */
+function globalSessionsRoot(): string {
+	const agentDir = process.env.PI_CODING_AGENT_DIR;
+	assert.ok(agentDir?.startsWith(tmpdir()) && agentDir);
+	return join(agentDir, "sessions");
+}
+
+async function writeSessionFile(
+	dir: string,
+	name: string,
+	entries: unknown[],
+): Promise<string> {
+	await mkdir(dir, { recursive: true });
+	const path = join(dir, name);
+	const header = {
+		type: "session",
+		version: 3,
+		id: name,
+		timestamp: "2026-08-10T00:00:00.000Z",
+		cwd: "/synthetic/other-repository",
+	};
+	await writeFile(
+		path,
+		`${[header, ...entries].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+	);
+	return path;
+}
+
+function resetSessionEntry(
+	kind: "intent" | "complete" | "uncertain" | "failed",
+	timestamp = "2026-08-11T00:00:00.000Z",
+): unknown {
+	return {
+		type: "custom",
+		id: `reset-${kind}`,
+		parentId: null,
+		timestamp,
+		customType: "pi-honcho-memory.reset",
+		data: { kind, workspaceId: "pi" },
+	};
+}
+
+/** Records every entry-parsed session path while keeping Pi's real parser. */
+function spyOnSessionOpen(): { paths: string[]; restore: () => void } {
+	const sessionManager = SessionManager as unknown as {
+		open: (path: string) => unknown;
+	};
+	const open = sessionManager.open;
+	const paths: string[] = [];
+	sessionManager.open = (path: string) => {
+		paths.push(path);
+		return open.call(SessionManager, path);
+	};
+	return {
+		paths,
+		restore: () => {
+			sessionManager.open = open;
+		},
+	};
+}
+
+type LifecycleClient = ReturnType<
+	NonNullable<Parameters<typeof honchoMemory>[1]>
+>;
+
+function lifecycleClient(
+	overrides: Record<string, unknown> = {},
+): LifecycleClient {
+	return {
+		checkConnection: async () => undefined,
+		fetchCachedMemory: async () => ({}),
+		deliverExchange: async () => ["remote-1"],
+		reconcileOperationIds: async () => new Map<string, string[]>(),
+		cloneSession: async () => "cloned-session",
+		search: async () => [],
+		chat: async () => undefined,
+		remember: async () => "conclusion-1",
+		listWorkspaces: async () => ["pi"],
+		deleteSession: async () => undefined,
+		deleteConclusion: async () => undefined,
+		inspectWorkspace: async () => ({
+			workspaceId: "pi",
+			peerIds: [],
+			sessionCount: 0,
+			conclusionCount: 0,
+		}),
+		deleteWorkspace: async () => undefined,
+		...overrides,
+	} as unknown as LifecycleClient;
+}
+
 test("does not register remote Honcho behavior in a Herdr subagent", () => {
 	const previous = process.env.PI_SUBAGENT_ID;
 	process.env.PI_SUBAGENT_ID = "child-1";
@@ -179,11 +284,7 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 		}),
 		deleteWorkspace: async () => undefined,
 	};
-	const sessionManager = SessionManager as unknown as {
-		listAll: () => Promise<Array<{ path: string }>>;
-	};
-	const listAll = sessionManager.listAll;
-	sessionManager.listAll = async () => [];
+	const restoreListAll = forbidListAll();
 	const context = {
 		...startupContext(),
 		sessionManager: {
@@ -233,7 +334,7 @@ test("uses a legacy Pi session mapping for startup recall", async () => {
 		assert.equal(contextHandler({ messages: [] }, context), undefined);
 	} finally {
 		await sessionShutdown({}, context);
-		sessionManager.listAll = listAll;
+		restoreListAll();
 		restoreEnvironment("HONCHO_API_KEY", previous.HONCHO_API_KEY);
 		restoreEnvironment("HONCHO_ENABLED", previous.HONCHO_ENABLED);
 		restoreEnvironment("PI_SUBAGENT_ID", previous.PI_SUBAGENT_ID);
@@ -415,11 +516,7 @@ test("uses remote reconciliation only for pending recovery delivery", async () =
 			},
 		},
 	];
-	const sessionManager = SessionManager as unknown as {
-		listAll: () => Promise<Array<{ path: string }>>;
-	};
-	const listAll = sessionManager.listAll;
-	sessionManager.listAll = async () => [];
+	const restoreListAll = forbidListAll();
 	const reconciled: string[] = [];
 	const delivered: string[] = [];
 	let cachedMemoryRequests = 0;
@@ -586,7 +683,7 @@ test("uses remote reconciliation only for pending recovery delivery", async () =
 		);
 	} finally {
 		await sessionShutdown({}, context);
-		sessionManager.listAll = listAll;
+		restoreListAll();
 		restoreEnvironment("HONCHO_API_KEY", previous);
 	}
 });
@@ -613,9 +710,14 @@ test("reconciles older post-reset delivery before normally delivering the exchan
 	];
 	const reconciled: string[] = [];
 	const delivered: string[] = [];
+	let memoryRequests = 0;
+	const statuses: string[] = [];
 	const client = {
 		checkConnection: async () => undefined,
-		fetchCachedMemory: async () => ({}),
+		fetchCachedMemory: async () => {
+			memoryRequests += 1;
+			return {};
+		},
 		deliverExchange: async (
 			_sessionId: string,
 			exchange: { operationId: string },
@@ -650,30 +752,24 @@ test("reconciles older post-reset delivery before normally delivering the exchan
 		deleteWorkspace: async () => undefined,
 	};
 	const context = {
-		...startupContext(),
+		...startupContext(statuses),
 		sessionManager: {
 			getSessionId: () => "pi-session",
 			getEntries: () => branch,
 			getBranch: () => branch,
 		},
 	} as unknown as ExtensionContext;
-	const sessionManager = SessionManager as unknown as {
-		listAll: () => Promise<Array<{ path: string }>>;
-		open: (path: string) => { getEntries: () => unknown[] };
-	};
-	const listAll = sessionManager.listAll;
-	const open = sessionManager.open;
-	sessionManager.listAll = async () => [{ path: "completed-reset" }];
-	sessionManager.open = () => ({
-		getEntries: () => [
-			{
-				type: "custom",
-				customType: "pi-honcho-memory.reset",
-				timestamp: "2026-08-11T00:00:00.000Z",
-				data: { kind: "complete", workspaceId: "pi" },
-			},
+	// The reset was recorded from another repository's Pi session directory.
+	const sessionsRoot = globalSessionsRoot();
+	await writeSessionFile(
+		join(sessionsRoot, "--synthetic-other-repository--"),
+		"completed-reset.jsonl",
+		[
+			resetSessionEntry("intent"),
+			resetSessionEntry("complete", "2026-08-11T00:00:01.000Z"),
 		],
-	});
+	);
+	const restoreListAll = forbidListAll();
 	const pi = new FakePiRuntime();
 	const appendEntry = pi.appendEntry.bind(pi);
 	pi.appendEntry = (customType, data) => {
@@ -706,6 +802,17 @@ test("reconciles older post-reset delivery before normally delivering the exchan
 	) => Promise<void>;
 	try {
 		await sessionStart({ reason: "startup" }, context);
+		await waitFor(
+			() => statuses.at(-1)?.startsWith("Honcho: connected") === true,
+		);
+		// A completed reset gates recall and tools until the first exchange
+		// recreates the remote workspace.
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		assert.equal(memoryRequests, 0);
+		assert.deepEqual(
+			pi.activeTools.filter((name) => name.startsWith("honcho_")),
+			[],
+		);
 		beforeAgentStart({ prompt: "First post-reset prompt" }, context);
 		branch.push({
 			id: "post-reset-assistant",
@@ -723,8 +830,8 @@ test("reconciles older post-reset delivery before normally delivering the exchan
 		assert.deepEqual(delivered, ["pi-post-reset-assistant"]);
 	} finally {
 		await sessionShutdown({}, context);
-		sessionManager.listAll = listAll;
-		sessionManager.open = open;
+		restoreListAll();
+		await rm(sessionsRoot, { recursive: true, force: true });
 		restoreEnvironment("HONCHO_API_KEY", previous);
 		restoreEnvironment("HONCHO_WORKSPACE_ID", previousWorkspaceId);
 	}
@@ -790,91 +897,373 @@ test("does not let a stale connection status replace a newer disabled startup", 
 	}
 });
 
-test("skips entry parsing for session files without a workspace-reset marker", async () => {
+interface ResetStartupHarness {
+	pi: FakePiRuntime;
+	statuses: string[];
+	branch: unknown[];
+	delivered: string[];
+	memoryRequests: () => number;
+	context: ExtensionContext;
+	start: () => Promise<void>;
+	settleExchange: (prompt: string, assistantId: string) => void;
+	shutdown: () => Promise<void>;
+}
+
+function resetStartupHarness(): ResetStartupHarness {
+	const statuses: string[] = [];
+	const branch: unknown[] = [];
+	const delivered: string[] = [];
+	let memoryRequests = 0;
+	const client = lifecycleClient({
+		fetchCachedMemory: async () => {
+			memoryRequests += 1;
+			return {};
+		},
+		deliverExchange: async (
+			_sessionId: string,
+			exchange: { operationId: string },
+		) => {
+			delivered.push(exchange.operationId);
+			return [`remote-${exchange.operationId}`];
+		},
+	});
+	const context = {
+		...startupContext(statuses),
+		sessionManager: {
+			getSessionId: () => "pi-session",
+			getEntries: () => branch,
+			getBranch: () => branch,
+		},
+	} as unknown as ExtensionContext;
+	const pi = new FakePiRuntime();
+	const appendEntry = pi.appendEntry.bind(pi);
+	pi.appendEntry = (customType, data) => {
+		appendEntry(customType, data);
+		branch.push({
+			type: "custom",
+			customType,
+			timestamp: "2026-08-11T00:01:00.000Z",
+			data,
+		});
+	};
+	honchoMemory(pi as unknown as ExtensionAPI, () => client);
+	const handler = <T>(name: string) => pi.handlers.get(name) as T;
+	return {
+		pi,
+		statuses,
+		branch,
+		delivered,
+		memoryRequests: () => memoryRequests,
+		context,
+		start: () =>
+			handler<
+				(event: { reason: "startup" }, ctx: ExtensionContext) => Promise<void>
+			>("session_start")({ reason: "startup" }, context),
+		settleExchange: (prompt, assistantId) => {
+			handler<(event: { prompt: string }, ctx: ExtensionContext) => void>(
+				"before_agent_start",
+			)({ prompt }, context);
+			branch.push({
+				id: assistantId,
+				type: "message",
+				message: {
+					role: "assistant",
+					stopReason: "stop",
+					content: [{ type: "text", text: `${prompt} response` }],
+				},
+			});
+			handler<(event: unknown, ctx: ExtensionContext) => void>("agent_settled")(
+				{},
+				context,
+			);
+		},
+		shutdown: () =>
+			handler<(event: unknown, ctx: ExtensionContext) => Promise<void>>(
+				"session_shutdown",
+			)({}, context),
+	};
+}
+
+async function withResetStartupEnvironment(
+	run: (sessionsRoot: string) => Promise<void>,
+): Promise<void> {
 	const previous = process.env.HONCHO_API_KEY;
 	const previousWorkspaceId = process.env.HONCHO_WORKSPACE_ID;
 	process.env.HONCHO_API_KEY = "test-key";
 	process.env.HONCHO_WORKSPACE_ID = "pi";
-	const sessionDir = await mkdtemp(join(tmpdir(), "pi-honcho-reset-scan-"));
-	const resetSessionPath = join(sessionDir, "with-reset.jsonl");
-	const plainSessionPath = join(sessionDir, "without-reset.jsonl");
-	await writeFile(
-		resetSessionPath,
-		`${JSON.stringify({
-			type: "custom",
-			customType: "pi-honcho-memory.reset",
-			timestamp: "2026-08-11T00:00:00.000Z",
-			data: { kind: "complete", workspaceId: "pi" },
-		})}\n`,
-	);
-	await writeFile(
-		plainSessionPath,
-		`${JSON.stringify({ type: "message", message: { role: "user" } })}\n`,
-	);
-	const sessionManager = SessionManager as unknown as {
-		listAll: () => Promise<Array<{ path: string }>>;
-		open: (path: string) => { getEntries: () => unknown[] };
-	};
-	const listAll = sessionManager.listAll;
-	const open = sessionManager.open;
-	sessionManager.listAll = async () => [
-		{ path: resetSessionPath },
-		{ path: plainSessionPath },
-	];
-	const parsedSessionPaths: string[] = [];
-	sessionManager.open = (path: string) => {
-		parsedSessionPaths.push(path);
-		return {
-			getEntries: () => [
-				{
-					type: "custom",
-					customType: "pi-honcho-memory.reset",
-					timestamp: "2026-08-11T00:00:00.000Z",
-					data: { kind: "complete", workspaceId: "pi" },
-				},
-			],
-		};
-	};
-	const client = {
-		checkConnection: async () => undefined,
-		fetchCachedMemory: async () => ({}),
-		deliverExchange: async () => ["remote-1"],
-		reconcileOperationIds: async () => new Map<string, string[]>(),
-		cloneSession: async () => "cloned-session",
-		search: async () => [],
-		chat: async () => undefined,
-		remember: async () => "conclusion-1",
-		listWorkspaces: async () => ["pi"],
-		deleteSession: async () => undefined,
-		deleteConclusion: async () => undefined,
-		inspectWorkspace: async () => ({
-			workspaceId: "pi",
-			peerIds: [],
-			sessionCount: 0,
-			conclusionCount: 0,
-		}),
-		deleteWorkspace: async () => undefined,
-	};
-	const context = startupContext();
-	const pi = new FakePiRuntime();
-	honchoMemory(pi as unknown as ExtensionAPI, () => client);
-	const sessionStart = pi.handlers.get("session_start") as (
-		event: { reason: "startup" },
-		ctx: ExtensionContext,
-	) => Promise<void>;
-	const sessionShutdown = pi.handlers.get("session_shutdown") as (
-		event: unknown,
-		ctx: ExtensionContext,
-	) => Promise<void>;
+	const sessionsRoot = globalSessionsRoot();
+	const restoreListAll = forbidListAll();
 	try {
-		await sessionStart({ reason: "startup" }, context);
-
-		assert.deepEqual(parsedSessionPaths, [resetSessionPath]);
+		await run(sessionsRoot);
 	} finally {
-		await sessionShutdown({}, context);
-		sessionManager.listAll = listAll;
-		sessionManager.open = open;
+		restoreListAll();
+		await rm(sessionsRoot, { recursive: true, force: true });
 		restoreEnvironment("HONCHO_API_KEY", previous);
 		restoreEnvironment("HONCHO_WORKSPACE_ID", previousWorkspaceId);
 	}
+}
+
+function activeHonchoTools(pi: FakePiRuntime): string[] {
+	return pi.activeTools.filter((name) => name.startsWith("honcho_"));
+}
+
+test("entry-parses only marked Pi sessions found across every global cwd directory", async () => {
+	await withResetStartupEnvironment(async (sessionsRoot) => {
+		const otherRepository = join(
+			sessionsRoot,
+			"--synthetic-other-repository--",
+		);
+		const resetSessionPath = await writeSessionFile(
+			otherRepository,
+			"with-reset.jsonl",
+			[resetSessionEntry("failed")],
+		);
+		await writeSessionFile(
+			join(sessionsRoot, "--synthetic-third-repository--"),
+			"without-reset.jsonl",
+			[
+				{
+					type: "message",
+					id: "plain-user",
+					parentId: null,
+					timestamp: "2026-08-11T00:00:00.000Z",
+					message: { role: "user", content: "plain" },
+				},
+			],
+		);
+		// Pi lists neither non-JSONL files, files directly under the root,
+		// unreadable `.jsonl` paths, nor files without a session header.
+		await writeSessionFile(otherRepository, "with-reset.jsonl.bak", [
+			resetSessionEntry("intent"),
+		]);
+		await writeSessionFile(sessionsRoot, "root-level.jsonl", [
+			resetSessionEntry("intent"),
+		]);
+		await mkdir(join(otherRepository, "directory.jsonl"));
+		await writeFile(
+			join(otherRepository, "headerless.jsonl"),
+			`${JSON.stringify(resetSessionEntry("intent"))}\n`,
+		);
+		const opened = spyOnSessionOpen();
+		const harness = resetStartupHarness();
+		try {
+			await harness.start();
+			await waitFor(() => harness.memoryRequests() === 1);
+
+			assert.deepEqual(opened.paths, [resetSessionPath]);
+			assert.deepEqual(activeHonchoTools(harness.pi), [
+				"honcho_search",
+				"honcho_chat",
+				"honcho_remember",
+			]);
+		} finally {
+			await harness.shutdown();
+			opened.restore();
+		}
+	});
 });
+
+for (const kind of ["intent", "uncertain"] as const) {
+	test(`a ${kind} reset from another cwd blocks delivery and tools`, async () => {
+		await withResetStartupEnvironment(async (sessionsRoot) => {
+			await writeSessionFile(
+				join(sessionsRoot, "--synthetic-other-repository--"),
+				`${kind}.jsonl`,
+				[resetSessionEntry(kind)],
+			);
+			const harness = resetStartupHarness();
+			try {
+				await harness.start();
+				await waitFor(
+					() =>
+						harness.statuses.at(-1)?.startsWith("Honcho: connected") === true,
+				);
+				assert.deepEqual(activeHonchoTools(harness.pi), []);
+
+				harness.settleExchange("Blocked prompt", "blocked-assistant");
+				await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+				assert.equal(harness.memoryRequests(), 0);
+				assert.deepEqual(harness.delivered, []);
+				assert.deepEqual(harness.pi.entries, []);
+			} finally {
+				await harness.shutdown();
+			}
+		});
+	});
+}
+
+test("starts normally when the global sessions directory is missing", async () => {
+	await withResetStartupEnvironment(async (sessionsRoot) => {
+		await rm(sessionsRoot, { recursive: true, force: true });
+		const harness = resetStartupHarness();
+		try {
+			await harness.start();
+			await waitFor(() => harness.memoryRequests() === 1);
+		} finally {
+			await harness.shutdown();
+		}
+	});
+});
+
+test("follows symlinked cwd session directories and skips dangling ones", async (t) => {
+	await withResetStartupEnvironment(async (sessionsRoot) => {
+		const linkedTarget = await mkdtemp(join(tmpdir(), "pi-honcho-linked-cwd-"));
+		await writeSessionFile(linkedTarget, "linked-intent.jsonl", [
+			resetSessionEntry("intent"),
+		]);
+		await mkdir(sessionsRoot, { recursive: true });
+		try {
+			await symlink(
+				join(linkedTarget, "missing"),
+				join(sessionsRoot, "--dangling-repository--"),
+				"dir",
+			);
+			await symlink(
+				linkedTarget,
+				join(sessionsRoot, "--linked-repository--"),
+				"dir",
+			);
+		} catch (error) {
+			await rm(linkedTarget, { recursive: true, force: true });
+			t.skip(`directory symlinks unavailable: ${(error as Error).message}`);
+			return;
+		}
+		const harness = resetStartupHarness();
+		try {
+			await harness.start();
+			await waitFor(
+				() => harness.statuses.at(-1)?.startsWith("Honcho: connected") === true,
+			);
+			harness.settleExchange("Blocked prompt", "blocked-assistant");
+			await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+			assert.deepEqual(activeHonchoTools(harness.pi), []);
+			assert.equal(harness.memoryRequests(), 0);
+			assert.deepEqual(harness.delivered, []);
+		} finally {
+			await harness.shutdown();
+			await rm(linkedTarget, { recursive: true, force: true });
+		}
+	});
+});
+
+for (const prefix of ["null", "false", "0", '""', 'null\nfalse\n0\n""']) {
+	test(`finds a reset after falsy JSON lines before the header: ${JSON.stringify(prefix)}`, async () => {
+		await withResetStartupEnvironment(async (sessionsRoot) => {
+			const dir = join(sessionsRoot, "--synthetic-other-repository--");
+			await mkdir(dir, { recursive: true });
+			// Pi's session parser skips falsy entries while looking for the header.
+			const header = {
+				type: "session",
+				version: 3,
+				id: "falsy-prefix",
+				timestamp: "2026-08-10T00:00:00.000Z",
+				cwd: "/synthetic/other-repository",
+			};
+			await writeFile(
+				join(dir, "falsy-prefix.jsonl"),
+				`${prefix}\n${[header, resetSessionEntry("intent")].map((entry) => JSON.stringify(entry)).join("\n")}\n`,
+			);
+			const harness = resetStartupHarness();
+			try {
+				await harness.start();
+				await waitFor(
+					() =>
+						harness.statuses.at(-1)?.startsWith("Honcho: connected") === true,
+				);
+				harness.settleExchange("Blocked prompt", "blocked-assistant");
+				await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+				assert.deepEqual(activeHonchoTools(harness.pi), []);
+				assert.equal(harness.memoryRequests(), 0);
+				assert.deepEqual(harness.delivered, []);
+			} finally {
+				await harness.shutdown();
+			}
+		});
+	});
+}
+
+/**
+ * Writes two tied resets into different cwd directories. Each case runs with
+ * both placements so the outcome cannot depend on directory listing order.
+ */
+async function writeTiedResets(
+	sessionsRoot: string,
+	first: "intent" | "complete" | "failed",
+	second: "intent" | "complete" | "failed",
+): Promise<void> {
+	const tie = "2026-08-11T00:00:00.000Z";
+	await writeSessionFile(join(sessionsRoot, "--a--"), `${first}.jsonl`, [
+		resetSessionEntry(first, tie),
+	]);
+	await writeSessionFile(join(sessionsRoot, "--z--"), `${second}.jsonl`, [
+		resetSessionEntry(second, tie),
+		{
+			type: "message",
+			id: "newer-activity",
+			parentId: `reset-${second}`,
+			timestamp: "2026-08-11T00:05:00.000Z",
+			message: { role: "user", content: "newer activity" },
+		},
+	]);
+}
+
+for (const [first, second] of [
+	["failed", "intent"],
+	["intent", "failed"],
+] as const) {
+	test(`tied intent and failed resets across cwds block (${first} listed in --a--)`, async () => {
+		await withResetStartupEnvironment(async (sessionsRoot) => {
+			await writeTiedResets(sessionsRoot, first, second);
+			const harness = resetStartupHarness();
+			try {
+				await harness.start();
+				await waitFor(
+					() =>
+						harness.statuses.at(-1)?.startsWith("Honcho: connected") === true,
+				);
+				harness.settleExchange("Blocked prompt", "blocked-assistant");
+				await new Promise<void>((resolve) => setTimeout(resolve, 25));
+
+				assert.deepEqual(activeHonchoTools(harness.pi), []);
+				assert.equal(harness.memoryRequests(), 0);
+				assert.deepEqual(harness.delivered, []);
+			} finally {
+				await harness.shutdown();
+			}
+		});
+	});
+}
+
+for (const [first, second] of [
+	["failed", "complete"],
+	["complete", "failed"],
+] as const) {
+	test(`tied complete and failed resets across cwds await recreation (${first} listed in --a--)`, async () => {
+		await withResetStartupEnvironment(async (sessionsRoot) => {
+			await writeTiedResets(sessionsRoot, first, second);
+			const harness = resetStartupHarness();
+			try {
+				await harness.start();
+				await waitFor(
+					() =>
+						harness.statuses.at(-1)?.startsWith("Honcho: connected") === true,
+				);
+				// Give an ungated startup time to recall memory and enable tools.
+				await new Promise<void>((resolve) => setTimeout(resolve, 25));
+				assert.equal(harness.memoryRequests(), 0);
+				assert.deepEqual(activeHonchoTools(harness.pi), []);
+
+				harness.settleExchange("Recreating prompt", "recreating-assistant");
+				await waitFor(() =>
+					harness.delivered.includes("pi-recreating-assistant"),
+				);
+				await waitFor(() => harness.memoryRequests() === 1);
+			} finally {
+				await harness.shutdown();
+			}
+		});
+	});
+}

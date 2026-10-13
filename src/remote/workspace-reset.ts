@@ -29,6 +29,30 @@ export function resetConfirmation(workspaceId: string): string {
 	return `DELETE ${workspaceId}`;
 }
 
+/**
+ * Breaks ties between reset entries that share the latest timestamp. Startup
+ * reads session files in directory order, not Pi's activity order, so a tie
+ * must resolve the same way for every input order. It resolves
+ * conservatively: an unresolved reset (`intent`/`uncertain`) blocks delivery
+ * over `complete`, and `complete` gates recall until recreation over
+ * `failed`. Ranking applies only among equal timestamps; a newer entry always
+ * wins.
+ */
+const RESET_TIE_RANK: Record<WorkspaceResetEntry["kind"], number> = {
+	failed: 0,
+	complete: 1,
+	intent: 2,
+	uncertain: 2,
+};
+
+function supersedes(entry: TimedResetEntry, current: TimedResetEntry): boolean {
+	return (
+		entry.timestamp > current.timestamp ||
+		(entry.timestamp === current.timestamp &&
+			RESET_TIE_RANK[entry.data.kind] > RESET_TIE_RANK[current.data.kind])
+	);
+}
+
 export function resetRecovery(
 	workspaceId: string,
 	entries: readonly TimedResetEntry[],
@@ -37,7 +61,7 @@ export function resetRecovery(
 		.filter((entry) => entry.data.workspaceId === workspaceId)
 		.reduce<TimedResetEntry | undefined>(
 			(current, entry) =>
-				!current || entry.timestamp > current.timestamp ? entry : current,
+				!current || supersedes(entry, current) ? entry : current,
 			undefined,
 		);
 	if (!latest) return { blocked: false };

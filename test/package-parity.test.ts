@@ -11,10 +11,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import {
-	type ExtensionAPI,
-	type ExtensionContext,
-	SessionManager,
+import type {
+	ExtensionAPI,
+	ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 
 import piHoncho from "../src/index.js";
@@ -471,12 +470,6 @@ test("package root adds standing instructions after the offline remote handler",
 			process.env[name],
 		]),
 	);
-	const sessionManager = SessionManager as unknown as {
-		listAll: () => Promise<Array<{ path: string }>>;
-	};
-	const listAll = sessionManager.listAll;
-	sessionManager.listAll = async () => [];
-
 	try {
 		process.env.HONCHO_ENABLED = "0";
 		delete process.env.HONCHO_API_KEY;
@@ -572,7 +565,6 @@ test("package root adds standing instructions after the offline remote handler",
 			await rm(connectedRoot, { recursive: true, force: true });
 		}
 	} finally {
-		sessionManager.listAll = listAll;
 		restoreEnvironment("HONCHO_ENABLED", previous.HONCHO_ENABLED);
 		restoreEnvironment("HONCHO_API_KEY", previous.HONCHO_API_KEY);
 		await rm(root, { recursive: true, force: true });

@@ -1,8 +1,11 @@
-import { readFile } from "node:fs/promises"; // pi-lens-ignore: find-import-file-without-extension
+import type { Dirent } from "node:fs"; // pi-lens-ignore: find-import-file-without-extension
+import { readdir, readFile } from "node:fs/promises"; // pi-lens-ignore: find-import-file-without-extension
+import { join } from "node:path"; // pi-lens-ignore: find-import-file-without-extension
 
 import {
 	type ExtensionAPI,
 	type ExtensionContext,
+	getAgentDir,
 	type SessionEntry,
 	SessionManager,
 } from "@earendil-works/pi-coding-agent"; // pi-lens-ignore: find-import-file-without-extension
@@ -90,18 +93,87 @@ const FLUSH_TIMEOUT_MS = 2_000;
 const RESET_SCAN_CONCURRENCY = 8;
 const inMemoryForkHandoffs = new InMemoryForkHandoffs();
 
+/** Maps items in fixed-size batches so startup never fans out unboundedly. */
+async function mapInBatches<T, R>(
+	items: readonly T[],
+	map: (item: T) => Promise<R>,
+): Promise<R[]> {
+	const results: R[] = [];
+	for (let index = 0; index < items.length; index += RESET_SCAN_CONCURRENCY) {
+		results.push(
+			...(await Promise.all(
+				items.slice(index, index + RESET_SCAN_CONCURRENCY).map(map),
+			)),
+		);
+	}
+	return results;
+}
+
+/**
+ * Lists the session files `SessionManager.listAll()` would consider under
+ * Pi's global sessions root without parsing every history: `.jsonl` files in
+ * each directory or symlink directly below it. Missing or unreadable
+ * directories contribute nothing.
+ */
+async function globalSessionPaths(): Promise<string[]> {
+	const sessionsDir = join(getAgentDir(), "sessions");
+	let entries: Dirent[];
+	try {
+		entries = await readdir(sessionsDir, { withFileTypes: true });
+	} catch {
+		return [];
+	}
+	const dirFiles = await mapInBatches(
+		entries.filter((entry) => entry.isDirectory() || entry.isSymbolicLink()),
+		async (entry) => {
+			const dir = join(sessionsDir, entry.name);
+			try {
+				return (await readdir(dir))
+					.filter((file) => file.endsWith(".jsonl"))
+					.map((file) => join(dir, file));
+			} catch {
+				return [];
+			}
+		},
+	);
+	return dirFiles.flat();
+}
+
+/**
+ * Matches the header check `SessionManager.listAll()` applies before listing
+ * a file: its line reader splits on LF, CRLF, and lone CR; blank, malformed,
+ * and falsy JSON lines (`null`, `false`, `0`, `""`) are skipped; the first
+ * remaining entry must be the session header.
+ */
+function hasSessionHeader(raw: Buffer): boolean {
+	for (const line of raw.toString("utf8").split(/\r?\n|\r(?!\n)/)) {
+		let entry: unknown;
+		try {
+			entry = JSON.parse(line);
+		} catch {
+			continue;
+		}
+		if (!entry) continue;
+		return (entry as { type?: unknown }).type === "session";
+	}
+	return false;
+}
+
 async function sessionResetEntries(
 	path: string,
 	counters: { parsed: number },
 ): Promise<TimedResetEntry[]> {
+	let raw: Buffer;
 	try {
-		// A raw-byte marker scan avoids entry-parsing sessions that cannot
-		// contain a workspace-reset entry.
-		const raw = await readFile(path);
-		if (!raw.includes(WORKSPACE_RESET_ENTRY_KEY)) return [];
+		raw = await readFile(path);
 	} catch {
-		// Fall through to entry parsing when the raw bytes are unavailable.
+		// Pi does not list unreadable session files either.
+		return [];
 	}
+	// A raw-byte marker scan avoids entry-parsing sessions that cannot
+	// contain a workspace-reset entry.
+	if (!raw.includes(WORKSPACE_RESET_ENTRY_KEY)) return [];
+	if (!hasSessionHeader(raw)) return [];
 	counters.parsed += 1;
 	return SessionManager.open(path)
 		.getEntries()
@@ -118,23 +190,15 @@ async function persistedResetRecovery(
 	workspaceId: string,
 ): Promise<StartupRecovery> {
 	const done = debugTimer("honcho:remote", "persistedResetRecovery");
-	const sessions = await SessionManager.listAll();
+	const sessionPaths = await globalSessionPaths();
 	const counters = { parsed: 0 };
-	const resetEntries: TimedResetEntry[] = [];
-	for (
-		let index = 0;
-		index < sessions.length;
-		index += RESET_SCAN_CONCURRENCY
-	) {
-		const batch = await Promise.all(
-			sessions
-				.slice(index, index + RESET_SCAN_CONCURRENCY)
-				.map((session) => sessionResetEntries(session.path, counters)),
-		);
-		resetEntries.push(...batch.flat());
-	}
+	const resetEntries = (
+		await mapInBatches(sessionPaths, (path) =>
+			sessionResetEntries(path, counters),
+		)
+	).flat();
 	done({
-		filesScanned: sessions.length,
+		filesScanned: sessionPaths.length,
 		parsed: counters.parsed,
 		resetEntries: resetEntries.length,
 	});
