@@ -317,6 +317,7 @@ test("package root registers remote then local behavior exactly once", async () 
 				agent_settled: 1,
 				before_agent_start: 2,
 				context: 1,
+				input: 1,
 				resources_discover: 1,
 				session_before_compact: 1,
 				session_before_fork: 1,

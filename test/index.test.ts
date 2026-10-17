@@ -1267,3 +1267,142 @@ for (const [first, second] of [
 		});
 	});
 }
+
+test("does not sync runs started by another extension's injected prompt", async () => {
+	const previous = process.env.HONCHO_API_KEY;
+	process.env.HONCHO_API_KEY = "test-key";
+	const restoreListAll = forbidListAll();
+	const branch: unknown[] = [];
+	const delivered: string[] = [];
+	let memoryRequests = 0;
+	const client = lifecycleClient({
+		fetchCachedMemory: async () => {
+			memoryRequests += 1;
+			return {};
+		},
+		deliverExchange: async (
+			_sessionId: string,
+			exchange: { operationId: string },
+		) => {
+			delivered.push(exchange.operationId);
+			return [`remote-${exchange.operationId}`];
+		},
+	});
+	const context = {
+		...startupContext(),
+		sessionManager: {
+			getSessionId: () => "pi-session",
+			getEntries: () => branch,
+			getBranch: () => branch,
+		},
+	} as unknown as ExtensionContext;
+	const pi = new FakePiRuntime();
+	honchoMemory(pi as unknown as ExtensionAPI, () => client);
+	const handler = <T>(name: string) => pi.handlers.get(name) as T;
+	const input =
+		handler<
+			(
+				event: {
+					text: string;
+					source: "interactive" | "rpc" | "extension";
+					streamingBehavior?: "steer" | "followUp";
+				},
+				ctx: ExtensionContext,
+			) => unknown
+		>("input");
+	const beforeAgentStart =
+		handler<(event: { prompt: string }, ctx: ExtensionContext) => void>(
+			"before_agent_start",
+		);
+	const agentSettled =
+		handler<(event: unknown, ctx: ExtensionContext) => void>("agent_settled");
+	const pendingCount = () =>
+		pi.entries.filter(
+			(entry) =>
+				entry.customType === "pi-honcho-memory.delivery" &&
+				(entry.data as { kind?: string }).kind === "pending",
+		).length;
+	const run = (
+		prompt: string,
+		source: "interactive" | "extension",
+		assistantId: string,
+		midRunInput?: { source: "interactive" | "extension" },
+	) => {
+		input({ text: prompt, source }, context);
+		beforeAgentStart({ prompt }, context);
+		if (midRunInput)
+			input(
+				{
+					text: "mid-run",
+					source: midRunInput.source,
+					streamingBehavior: "followUp",
+				},
+				context,
+			);
+		branch.push({
+			id: assistantId,
+			type: "message",
+			message: {
+				role: "assistant",
+				stopReason: "stop",
+				content: [{ type: "text", text: `${prompt} response` }],
+			},
+		});
+		agentSettled({}, context);
+	};
+	try {
+		await handler<
+			(event: { reason: "startup" }, ctx: ExtensionContext) => Promise<void>
+		>("session_start")({ reason: "startup" }, context);
+		await waitFor(() => memoryRequests === 1);
+
+		run("User question", "interactive", "assistant-1");
+		await waitFor(() => delivered.length === 1);
+		assert.deepEqual(delivered, ["pi-assistant-1"]);
+
+		run("[Injected QA directive]", "extension", "assistant-2");
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		assert.deepEqual(delivered, ["pi-assistant-1"]);
+		assert.equal(pendingCount(), 1, "no ledger entry for the injected run");
+
+		// A queued extension message during a user's run does not hide that run.
+		run("User follow-up", "interactive", "assistant-3", {
+			source: "extension",
+		});
+		await waitFor(() => delivered.length === 2);
+		assert.deepEqual(delivered, ["pi-assistant-1", "pi-assistant-3"]);
+
+		// Two prompts in flight at once (async input handlers): each run keeps
+		// its own source regardless of which input event arrived last.
+		input({ text: "Concurrent user prompt", source: "interactive" }, context);
+		run("[Concurrent injected prompt]", "extension", "assistant-4");
+		await new Promise<void>((resolve) => setTimeout(resolve, 25));
+		assert.deepEqual(delivered, ["pi-assistant-1", "pi-assistant-3"]);
+		input({ text: "[Late injected prompt]", source: "extension" }, context);
+		input({ text: "Racing user prompt", source: "interactive" }, context);
+		input({ text: "[Late injected prompt 2]", source: "extension" }, context);
+		beforeAgentStart({ prompt: "Racing user prompt" }, context);
+		branch.push({
+			id: "assistant-5",
+			type: "message",
+			message: {
+				role: "assistant",
+				stopReason: "stop",
+				content: [{ type: "text", text: "Racing response" }],
+			},
+		});
+		agentSettled({}, context);
+		await waitFor(() => delivered.length === 3);
+		assert.deepEqual(delivered, [
+			"pi-assistant-1",
+			"pi-assistant-3",
+			"pi-assistant-5",
+		]);
+	} finally {
+		await handler<(event: unknown, ctx: ExtensionContext) => Promise<void>>(
+			"session_shutdown",
+		)({}, context);
+		restoreListAll();
+		restoreEnvironment("HONCHO_API_KEY", previous);
+	}
+});

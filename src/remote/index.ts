@@ -482,6 +482,12 @@ export default function honchoMemory(
 	let remoteSessionId: string | undefined;
 	let memoryGeneration = 0;
 	let submittedPrompt: string | undefined;
+	// Idle inputs seen since the last run started (text + source), and whether
+	// the run now in progress was started by another extension
+	// (pi.sendUserMessage). Two prompts can be in flight at once while async
+	// input handlers run, so the run is matched to its input by text.
+	const pendingRunInputs: { text: string; source: string }[] = [];
+	let submittedPromptFromExtension = false;
 	let entryIdsBeforeRun = new Set<string>();
 	let trackedSessionId: string | undefined;
 	let trackedEntryCount = 0;
@@ -664,8 +670,26 @@ export default function honchoMemory(
 		await deliveryQueue?.flushWithin(FLUSH_TIMEOUT_MS);
 	}
 
+	pi.on("input", (event) => {
+		// Only input delivered while idle starts a run; steer/followUp input is
+		// folded into the current run and never reaches before_agent_start.
+		if (event.streamingBehavior !== undefined) return;
+		pendingRunInputs.push({ text: event.text, source: event.source });
+		if (pendingRunInputs.length > 8) pendingRunInputs.shift();
+	});
+
 	pi.on("before_agent_start", (event, ctx) => {
 		submittedPrompt = event.prompt;
+		// Prefer the input whose text is this prompt; fall back to the latest one
+		// (another extension's input handler may have transformed the text).
+		let runInput = pendingRunInputs.at(-1);
+		for (let index = pendingRunInputs.length - 1; index >= 0; index -= 1)
+			if (pendingRunInputs[index]?.text === event.prompt) {
+				runInput = pendingRunInputs[index];
+				break;
+			}
+		submittedPromptFromExtension = runInput?.source === "extension";
+		pendingRunInputs.length = 0;
 		// Sessions are append-only, so only entries added since the last turn
 		// need indexing; a session change or shrink invalidates the tracker.
 		const entries = ctx.sessionManager.getEntries();
@@ -688,7 +712,16 @@ export default function honchoMemory(
 	pi.on("agent_settled", (_event, ctx) => {
 		const prompt = submittedPrompt;
 		submittedPrompt = undefined;
+		const fromExtension = submittedPromptFromExtension;
+		submittedPromptFromExtension = false;
 		if (!prompt) return;
+		// A prompt injected by another extension is not the user's words; syncing
+		// it would make Honcho derive its instructions as the user's preferences.
+		if (fromExtension)
+			return debugLog("honcho:remote", "agent_settled", {
+				queued: false,
+				reason: "extension_prompt",
+			});
 		const assistant = latestCompletedAssistant(
 			ctx.sessionManager.getBranch(),
 			entryIdsBeforeRun,
